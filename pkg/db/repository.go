@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/soundprediction/pensiero/pkg/models"
 )
@@ -13,6 +14,10 @@ type Repository struct {
 
 func NewRepository(client *Client) *Repository {
 	return &Repository{client: client}
+}
+
+func (r *Repository) Client() *Client {
+	return r.client
 }
 
 // SaveEdge inserts or updates an epistemic edge
@@ -116,4 +121,27 @@ func (r *Repository) ListEdgesBySource(source string) ([]*models.EpistemicEdge, 
 	}
 
 	return edges, nil
+}
+
+// SaveMetaRelation inserts or updates a meta relation
+func (r *Repository) SaveMetaRelation(meta *models.MetaRelation) error {
+	query := `
+	?[id, head, body, frequency, confidence, provenance, created_at] :=
+	  id = $id, head = $head, body = $body, frequency = $frequency,
+	  confidence = $confidence, provenance = $provenance, created_at = $created_at
+	:put meta_relation {id, head, body, frequency, confidence, provenance, created_at}
+	`
+
+	params := map[string]interface{}{
+		"id":         meta.ID,
+		"head":       meta.Head,
+		"body":       string(meta.Body),
+		"frequency":  meta.Frequency,
+		"confidence": meta.Confidence,
+		"provenance": string(meta.Provenance),
+		"created_at": meta.CreatedAt.Format(time.RFC3339),
+	}
+
+	_, err := r.client.Run(query, params)
+	return err
 }
