@@ -1,8 +1,8 @@
 // Package reasoning is a pluggable symbolic graph-reasoning engine: bounded,
 // explainable multi-hop derivation over a property graph (ladybug/Kuzu by default).
-// It is consumed by hosts (e.g. the humn DDx verifier) through the Reasoner
-// interface and a name-keyed registry, so a host can register/swap reasoning
-// backends without a compile-time dependency on a concrete graph driver.
+// It is consumed by host applications through the Reasoner interface and a
+// name-keyed registry, so a host can register/swap reasoning backends without a
+// compile-time dependency on a concrete graph driver.
 //
 // See SYMBOLIC_GRAPH_LOGIC.md for the full design.
 package reasoning
@@ -105,7 +105,7 @@ type GraphQuerier interface {
 	Query(ctx context.Context, query string, params map[string]any) ([]map[string]any, error)
 }
 
-// Reasoner is the plugin contract a host (humn DDx verifier) depends on.
+// Reasoner is the plugin contract a host application depends on.
 type Reasoner interface {
 	// Derive returns ranked proof paths from Source toward Target (or any target).
 	Derive(ctx context.Context, req DeriveRequest) ([]Proof, error)

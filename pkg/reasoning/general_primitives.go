@@ -1,11 +1,10 @@
 package reasoning
 
 // General (domain-agnostic) predicate primitives. These are reusable across ANY
-// domain and exist IN ADDITION TO a domain's own predicates: a domain registry
-// (e.g. DefaultMedicalRegistry) is built by extending this general base, so the
-// abstract relations (is_a, part_of, same_as, related_to, …) and their general
-// composition rules are always available and a domain only declares its specific
-// predicates on top.
+// use case and exist IN ADDITION TO caller-specific predicates: a specialized
+// registry is built by extending this general base, so the abstract relations
+// (is_a, part_of, same_as, related_to, …) and their general composition rules
+// are always available and callers only declare their specific predicates on top.
 
 // generalPredicates are the universal logical relations, declared via the general
 // characteristics in predicates.go.
@@ -41,7 +40,8 @@ var generalCompositions = []CompositionRule{
 
 // generalAliases maps common surface forms of the general relations to canonicals.
 var generalAliases = map[string]string{
-	"is a": "is_a", "isa": "is_a", "subclass of": "is_a", "is a kind of": "is_a",
+	"is a": "is_a", "isa": "is_a", "subclass of": "is_a", "subclass_of": "is_a",
+	"subClassOf": "is_a", "is a kind of": "is_a",
 	"type of": "is_a", "subtype of": "is_a",
 	"instance of": "instance_of", "part of": "part_of", "located in": "located_in",
 	"same as": "same_as", "equivalent to": "equivalent_to",
@@ -50,7 +50,7 @@ var generalAliases = map[string]string{
 }
 
 // DefaultGeneralRegistry returns ONLY the general predicate primitives — a reusable
-// base usable directly for non-medical graphs, or extended by a domain registry.
+// base usable directly as-is, or extended by a caller registry.
 func DefaultGeneralRegistry() *PredicateRegistry {
 	return buildRegistry(generalPredicates, generalAliases, generalCompositions, nil)
 }

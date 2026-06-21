@@ -136,13 +136,34 @@ func cyStr(s string) string {
 	return "'" + s + "'"
 }
 
+// parseProofJSON decodes the `proof` column emitted by the reasoning extension.
+// The extension emits a proof as a JSON ARRAY of steps ([{edge_id,rule,predicate,
+// source,target,confidence}, ...]); some callers/backends may instead emit the
+// Proof object form ({source,target,steps,...}). Both are accepted.
 func parseProofJSON(s string) (Proof, bool) {
 	s = strings.TrimSpace(s)
-	if s == "" || s == "null" {
+	if s == "" || s == "null" || s == "[]" {
 		return Proof{}, false
+	}
+	if strings.HasPrefix(s, "[") {
+		var steps []ProofStep
+		if err := json.Unmarshal([]byte(s), &steps); err != nil || len(steps) == 0 {
+			return Proof{}, false
+		}
+		p := Proof{
+			Steps:     steps,
+			Source:    steps[0].Source,
+			Target:    steps[len(steps)-1].Target,
+			RuleClass: steps[0].Rule,
+			Hops:      len(steps),
+		}
+		return p, true
 	}
 	var p Proof
 	if err := json.Unmarshal([]byte(s), &p); err != nil {
+		return Proof{}, false
+	}
+	if len(p.Steps) == 0 && p.Source == "" && p.Target == "" {
 		return Proof{}, false
 	}
 	return p, true

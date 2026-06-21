@@ -1,3 +1,5 @@
+github.com/LadybugDB/go-ladybug v0.17.0 h1:RXDbkBjrbRmLdEbhGl4CLOIEzSt09gbP0n9UbKDEfwI=
+github.com/LadybugDB/go-ladybug v0.17.0/go.mod h1:GeIXmE8XyF5TFS94NAuTag7vgCC+no/HTBMRA6Rd5Cs=
 github.com/cozodb/cozo-lib-go v0.7.5 h1:9+ETbx+TJCgWWX3RRKNEzRRr3m8fKOGqfkwr9OQzE+8=
 github.com/cozodb/cozo-lib-go v0.7.5/go.mod h1:ql1C3WuUhvnWbZOU+N2J9hJK57mMQNaF6FjOArL/fs4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
