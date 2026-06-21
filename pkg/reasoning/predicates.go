@@ -108,6 +108,26 @@ func (r *PredicateRegistry) has(canon string, c Characteristic) bool {
 	return ok && m.Has(c)
 }
 
+// Conflicting returns the predicates declared disjoint with canon: a predicate B
+// such that an asserted B(a,b) is logically inconsistent with a claimed canon(a,b).
+// Symmetric over the registered DisjointPairs. Drives contradiction detection.
+func (r *PredicateRegistry) Conflicting(canon string) []string {
+	if r == nil {
+		return nil
+	}
+	c := normKey(canon)
+	var out []string
+	for _, d := range r.disjoint {
+		switch {
+		case normKey(d.A) == c:
+			out = append(out, d.B)
+		case normKey(d.B) == c:
+			out = append(out, d.A)
+		}
+	}
+	return out
+}
+
 // Inverse returns the canonical inverse predicate, if declared.
 func (r *PredicateRegistry) Inverse(canon string) (string, bool) {
 	if r == nil {

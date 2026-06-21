@@ -123,6 +123,13 @@ func runBuildGeneralization(args []string) error {
 		return fmt.Errorf("open output: %w", err)
 	}
 	emitter := generalization.NewCypherEmitter(target, scope)
+	// Emit a fixed-size FLOAT[N] embedding column matching the SOURCE graph's width
+	// (whatever the graph DB uses) so the emitted subgraph is vector-indexable, rather
+	// than assuming a dimension. Falls back to the emitter default when the source has
+	// no embeddings.
+	if dim := detectEmbeddingDim(ctx, source); dim > 0 {
+		emitter = emitter.WithEmbeddingDim(dim)
+	}
 	emitErr := emitter.Emit(ctx, graph)
 	closeErr := target.Close()
 	if emitErr != nil {
@@ -169,6 +176,28 @@ func readScopeEntities(path string) ([]string, error) {
 		out = append(out, value)
 	}
 	return out, nil
+}
+
+// detectEmbeddingDim returns the source graph's name_embedding width (the dimension
+// the graph DB actually uses), so the emitted subgraph declares a matching fixed-size
+// FLOAT[N] column. Returns 0 when the source carries no embeddings.
+func detectEmbeddingDim(ctx context.Context, source reasoning.GraphQuerier) int {
+	rows, err := source.Query(ctx, "MATCH (n:Entity) WHERE size(n.name_embedding) > 0 RETURN size(n.name_embedding) AS d LIMIT 1", nil)
+	if err != nil || len(rows) == 0 {
+		return 0
+	}
+	switch v := rows[0]["d"].(type) {
+	case int64:
+		return int(v)
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
 }
 
 func splitCSV(raw string) []string {

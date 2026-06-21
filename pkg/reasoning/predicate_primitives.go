@@ -78,6 +78,16 @@ var medicalAliases = map[string]string{
 // DefaultMedicalRegistry returns the general primitives EXTENDED with the medical
 // domain: general taxonomy/mereology/association + the clinical predicates,
 // composition rules, and aliases. A host may further extend it.
+// medicalDisjoint declares pairs of predicates that cannot both relate the same
+// ordered pair of entities: asserting one while the KB asserts the other is a
+// logical contradiction (e.g. a drug both treating and contraindicated for a
+// condition, or both causing and preventing it). Drives REASON_CONTRADICTS.
+var medicalDisjoint = []DisjointPair{
+	{A: "treats", B: "contraindicated"},
+	{A: "indicated", B: "contraindicated"},
+	{A: "prevents", B: "causes"},
+}
+
 func DefaultMedicalRegistry() *PredicateRegistry {
 	preds := append(append([]PredicateMeta{}, generalPredicates...), medicalPredicates...)
 	comps := append(append([]CompositionRule{}, generalCompositions...), medicalCompositions...)
@@ -88,7 +98,7 @@ func DefaultMedicalRegistry() *PredicateRegistry {
 	for k, v := range medicalAliases {
 		aliases[k] = v
 	}
-	return buildRegistry(preds, aliases, comps, nil)
+	return buildRegistry(preds, aliases, comps, medicalDisjoint)
 }
 
 // TransitivePrimitives is the default taxonomic-closure predicate set.

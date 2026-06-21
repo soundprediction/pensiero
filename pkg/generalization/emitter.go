@@ -9,13 +9,28 @@ import (
 	"github.com/soundprediction/pensiero/pkg/reasoning"
 )
 
+// DefaultEmbeddingDim is the fixed embedding width emitted for the name/fact
+// embedding columns. A FIXED-size FLOAT[N] (not an unbounded FLOAT[]) is required
+// for CREATE_VECTOR_INDEX to build an HNSW index over the column, so hosts can
+// resolve names by embedding similarity over the emitted subgraph itself.
+const DefaultEmbeddingDim = 1024
+
 type CypherEmitter struct {
-	target reasoning.GraphQuerier
-	scope  string
+	target       reasoning.GraphQuerier
+	scope        string
+	embeddingDim int
 }
 
 func NewCypherEmitter(target reasoning.GraphQuerier, scope string) *CypherEmitter {
-	return &CypherEmitter{target: target, scope: scope}
+	return &CypherEmitter{target: target, scope: scope, embeddingDim: DefaultEmbeddingDim}
+}
+
+// WithEmbeddingDim overrides the emitted embedding width (default 1024).
+func (e *CypherEmitter) WithEmbeddingDim(dim int) *CypherEmitter {
+	if dim > 0 {
+		e.embeddingDim = dim
+	}
+	return e
 }
 
 func (e *CypherEmitter) Emit(ctx context.Context, g *Graph) error {
@@ -42,14 +57,18 @@ func (e *CypherEmitter) Emit(ctx context.Context, g *Graph) error {
 }
 
 func (e *CypherEmitter) createSchema(ctx context.Context) error {
-	_, err := e.target.Query(ctx, `
+	dim := e.embeddingDim
+	if dim <= 0 {
+		dim = DefaultEmbeddingDim
+	}
+	_, err := e.target.Query(ctx, fmt.Sprintf(`
 CREATE NODE TABLE IF NOT EXISTS Entity (
     uuid STRING PRIMARY KEY,
     name STRING,
     group_id STRING,
     labels STRING[],
     created_at TIMESTAMP,
-    name_embedding FLOAT[],
+    name_embedding FLOAT[%d],
     summary STRING,
     attributes STRING
 );
@@ -59,7 +78,7 @@ CREATE NODE TABLE IF NOT EXISTS RelatesToNode_ (
     created_at TIMESTAMP,
     name STRING,
     fact STRING,
-    fact_embedding FLOAT[],
+    fact_embedding FLOAT[%d],
     episodes STRING[],
     attributes STRING,
     confidence DOUBLE,
@@ -69,7 +88,7 @@ CREATE REL TABLE IF NOT EXISTS RELATES_TO(
     FROM Entity TO RelatesToNode_,
     FROM RelatesToNode_ TO Entity
 );
-`, nil)
+`, dim, dim), nil)
 	if err != nil {
 		return fmt.Errorf("generalization schema emit: %w", err)
 	}

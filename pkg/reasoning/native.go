@@ -42,8 +42,13 @@ func (n *NativeReasoner) EnsureLoaded(ctx context.Context) error {
 	return err
 }
 
-// Entails calls CALL REASON_ENTAILS(subject, predicate, object, max_hops).
+// Entails calls CALL REASON_ENTAILS(subject, predicate, object, max_hops). A logical
+// contradiction — a conflicting KB edge between the same ordered pair — takes
+// precedence and short-circuits to VerdictContradicted.
 func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, error) {
+	if conflict, proof, err := n.Contradicts(ctx, c); err == nil && conflict {
+		return EntailResult{Verdict: VerdictContradicted, Confidence: 1.0, Best: proof}, nil
+	}
 	q := fmt.Sprintf(
 		"CALL REASON_ENTAILS(%s, %s, %s, %d) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
 		cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops)
@@ -95,24 +100,51 @@ func (n *NativeReasoner) Derive(ctx context.Context, req DeriveRequest) ([]Proof
 	return out, nil
 }
 
-// Contradicts calls CALL REASON_CONTRADICTS(subject, object).
+// Contradicts reports a logical contradiction: the KB asserts, between the same
+// ordered pair (subject, object), a predicate that is registered disjoint with the
+// claimed predicate (e.g. CONTRAINDICATED vs TREATS, CAUSES vs PREVENTS). This is a
+// real inconsistency with the knowledge base — distinct from a mere absence of
+// support (a gap). Implemented in Go over the reified graph (the bundled extension's
+// REASON_CONTRADICTS needs an ontology-disjointness side table that is not present).
 func (n *NativeReasoner) Contradicts(ctx context.Context, c Claim) (bool, *Proof, error) {
-	q := fmt.Sprintf(
-		"CALL REASON_CONTRADICTS(%s, %s) YIELD contradicted, proof RETURN contradicted, proof",
-		cyStr(c.Subject), cyStr(c.Object))
-	rows, err := n.g.Query(ctx, q, nil)
+	pred := strings.TrimSpace(c.Predicate)
+	if m, ok := n.reg.Canonical(pred); ok {
+		pred = m.Canonical
+	}
+	conflicts := n.reg.Conflicting(pred)
+	if len(conflicts) == 0 {
+		return false, nil, nil
+	}
+	lc := make([]string, 0, len(conflicts))
+	for _, p := range conflicts {
+		lc = append(lc, strings.ToLower(strings.TrimSpace(p)))
+	}
+	// Reified model: (s)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(o), with the
+	// predicate on r.name. A KB edge between the same pair carrying a conflicting
+	// predicate contradicts the claim.
+	const q = `MATCH (s:Entity)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(o:Entity)
+		WHERE lower(s.name) = $s AND lower(o.name) = $o AND lower(r.name) IN $preds
+		RETURN r.name AS pred LIMIT 1`
+	rows, err := n.g.Query(ctx, q, map[string]any{
+		"s":     strings.ToLower(strings.TrimSpace(c.Subject)),
+		"o":     strings.ToLower(strings.TrimSpace(c.Object)),
+		"preds": lc,
+	})
 	if err != nil {
-		return false, nil, fmt.Errorf("REASON_CONTRADICTS: %w", err)
+		return false, nil, fmt.Errorf("contradiction query: %w", err)
 	}
 	if len(rows) == 0 {
 		return false, nil, nil
 	}
-	contradicted := asBool(rows[0]["contradicted"])
-	var proof *Proof
-	if p, ok := parseProofJSON(asString(rows[0]["proof"])); ok {
-		proof = &p
+	conflictPred := asString(rows[0]["pred"])
+	proof := &Proof{
+		Source:    c.Subject,
+		Target:    c.Object,
+		Predicate: conflictPred,
+		RuleClass: "disjoint",
+		Steps:     []ProofStep{{Source: c.Subject, Predicate: conflictPred, Target: c.Object}},
 	}
-	return contradicted, proof, nil
+	return true, proof, nil
 }
 
 func (n *NativeReasoner) applyDefaults(req DeriveRequest) DeriveRequest {
