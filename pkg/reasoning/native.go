@@ -121,14 +121,21 @@ func (n *NativeReasoner) Contradicts(ctx context.Context, c Claim) (bool, *Proof
 	}
 	// Reified model: (s)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(o), with the
 	// predicate on r.name. A KB edge between the same pair carrying a conflicting
-	// predicate contradicts the claim.
+	// predicate contradicts the claim. The object is matched exactly OR by base name
+	// (its dosage/variant qualifier stripped, e.g. "polyethylene glycol" matches
+	// "polyethylene glycol 400") so a conflicting record for any variant of the same
+	// drug still fires — conservative on the safe side for contraindications.
+	obj := strings.ToLower(strings.TrimSpace(c.Object))
+	base := baseName(obj)
 	const q = `MATCH (s:Entity)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(o:Entity)
-		WHERE lower(s.name) = $s AND lower(o.name) = $o AND lower(r.name) IN $preds
-		RETURN r.name AS pred LIMIT 1`
+		WHERE lower(s.name) = $s AND (lower(o.name) = $o OR lower(o.name) = $base OR lower(o.name) STARTS WITH $basesp) AND lower(r.name) IN $preds
+		RETURN r.name AS pred, o.name AS obj LIMIT 1`
 	rows, err := n.g.Query(ctx, q, map[string]any{
-		"s":     strings.ToLower(strings.TrimSpace(c.Subject)),
-		"o":     strings.ToLower(strings.TrimSpace(c.Object)),
-		"preds": lc,
+		"s":      strings.ToLower(strings.TrimSpace(c.Subject)),
+		"o":      obj,
+		"base":   base,
+		"basesp": base + " ",
+		"preds":  lc,
 	})
 	if err != nil {
 		return false, nil, fmt.Errorf("contradiction query: %w", err)
@@ -137,14 +144,40 @@ func (n *NativeReasoner) Contradicts(ctx context.Context, c Claim) (bool, *Proof
 		return false, nil, nil
 	}
 	conflictPred := asString(rows[0]["pred"])
+	target := asString(rows[0]["obj"])
+	if strings.TrimSpace(target) == "" {
+		target = c.Object
+	}
 	proof := &Proof{
 		Source:    c.Subject,
-		Target:    c.Object,
+		Target:    target,
 		Predicate: conflictPred,
 		RuleClass: "disjoint",
-		Steps:     []ProofStep{{Source: c.Subject, Predicate: conflictPred, Target: c.Object}},
+		Steps:     []ProofStep{{Source: c.Subject, Predicate: conflictPred, Target: target}},
 	}
 	return true, proof, nil
+}
+
+// baseName strips a trailing dosage/variant qualifier (trailing purely-numeric
+// tokens) from an entity name, so drug variants share a base — e.g.
+// "polyethylene glycol 3350" -> "polyethylene glycol".
+func baseName(s string) string {
+	toks := strings.Fields(s)
+	for len(toks) > 1 {
+		last := toks[len(toks)-1]
+		numeric := last != ""
+		for _, r := range last {
+			if r < '0' || r > '9' {
+				numeric = false
+				break
+			}
+		}
+		if !numeric {
+			break
+		}
+		toks = toks[:len(toks)-1]
+	}
+	return strings.Join(toks, " ")
 }
 
 func (n *NativeReasoner) applyDefaults(req DeriveRequest) DeriveRequest {
