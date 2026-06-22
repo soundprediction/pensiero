@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package pensiero.v1;
+
+option go_package = "github.com/soundprediction/pensiero/pkg/grpcsvc/pb;pb";
+
+// ReasonerService exposes pensiero's symbolic reasoner over a topic graph so it
+// can run as a separate process / on a different machine. Mirrors the
+// reasoning.Reasoner contract a host application depends on.
+service ReasonerService {
+  // Entails decides whether a claim is symbolically supported, contradicted, or
+  // unsupported, with the best supporting/conflicting proof.
+  rpc Entails(EntailsRequest) returns (EntailResult);
+  // Contradicts reports an ontology-disjointness conflict for the claim.
+  rpc Contradicts(ContradictsRequest) returns (ContradictsResponse);
+  // Derive returns ranked proof paths from Source toward Target (or any target).
+  rpc Derive(DeriveRequest) returns (DeriveResponse);
+  // Health is a liveness probe.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message Claim {
+  string subject = 1;
+  string predicate = 2;
+  string object = 3;
+}
+
+message ProofStep {
+  string edge_id = 1;
+  string rule = 2;
+  string predicate = 3;
+  string source = 4;
+  string target = 5;
+  double confidence = 6;
+}
+
+message Proof {
+  string source = 1;
+  string target = 2;
+  string predicate = 3;
+  string rule_class = 4;
+  repeated ProofStep steps = 5;
+  int32 hops = 6;
+  double confidence = 7;
+}
+
+message EntailsRequest { Claim claim = 1; }
+
+message EntailResult {
+  Proof best = 1;        // nil when no proof
+  string verdict = 2;    // "entailed" | "contradicted" | "unsupported"
+  repeated Proof all = 3;
+  double confidence = 4;
+}
+
+message ContradictsRequest { Claim claim = 1; }
+message ContradictsResponse {
+  bool contradicts = 1;
+  Proof proof = 2;       // nil when no conflict
+}
+
+message DeriveRequest {
+  string source = 1;
+  string target = 2;
+  repeated string preds = 3;
+  int32 max_hops = 4;
+  double decay = 5;
+  double min_conf = 6;
+  int32 limit = 7;
+  bool include_inverse = 8;
+}
+message DeriveResponse { repeated Proof proofs = 1; }
+
+message HealthRequest {}
+message HealthResponse { string status = 1; }
