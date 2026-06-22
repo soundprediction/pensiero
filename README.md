@@ -109,6 +109,7 @@ The longer-form design lives in [`docs/`](docs/):
 - [`DESIGN.md`](docs/DESIGN.md) — the epistemic base, inductive generalization, and gap analysis.
 - [`GENERALIZATION_REASONING.md`](docs/GENERALIZATION_REASONING.md) — why most reasoning should happen between generalization nodes.
 - [`SYMBOLIC_GRAPH_LOGIC.md`](docs/SYMBOLIC_GRAPH_LOGIC.md) — the deductive, in-graph multi-hop rule classes.
+- [`GRPC_SERVER.md`](docs/GRPC_SERVER.md) — serve the reasoner over gRPC (separate process / machine, pooled for horizontal scale).
 
 ## Requirements
 
