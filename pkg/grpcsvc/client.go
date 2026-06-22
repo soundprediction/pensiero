@@ -6,7 +6,6 @@ import (
 	"github.com/soundprediction/pensiero/pkg/grpcsvc/pb"
 	"github.com/soundprediction/pensiero/pkg/reasoning"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // BackendName identifies the remote backend in the registry / diagnostics.
@@ -23,10 +22,12 @@ type Client struct {
 // compile-time check: the gRPC client satisfies the host Reasoner contract.
 var _ reasoning.Reasoner = (*Client)(nil)
 
-// Dial connects to a pensiero reasoner gRPC server at target (host:port).
+// Dial connects to a pensiero reasoner gRPC server or POOL. target may be a single
+// "host:port", a comma-separated static pool "h1:port,h2:port", or a scheme target
+// such as "dns:///pensiero.svc:50072" (a dynamic, autoscaling pool); requests
+// round-robin across all instances. Pass opts for TLS/keepalive/retries.
 func Dial(target string, opts ...grpc.DialOption) (*Client, error) {
-	base := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	cc, err := grpc.NewClient(target, append(base, opts...)...)
+	cc, err := dialPool(target, opts...)
 	if err != nil {
 		return nil, err
 	}
