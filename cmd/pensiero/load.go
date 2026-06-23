@@ -160,7 +160,7 @@ func (l *LoadTracker) BeginIdlePass(ctx context.Context, quietFor time.Duration)
 		return passCtx, cancel, true
 	}
 	l.passMu.Lock()
-	if !l.Idle(quietFor) {
+	if l.activePassCancel != nil || !l.Idle(quietFor) {
 		l.passMu.Unlock()
 		cancel()
 		return passCtx, func() {}, false

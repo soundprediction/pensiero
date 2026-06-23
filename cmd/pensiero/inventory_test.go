@@ -157,7 +157,7 @@ func TestInventoryEndpointReturnsSnapshot(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/inventory", nil)
 	rec := httptest.NewRecorder()
-	healthHandler(nil, nil, newReadinessGate(), inv).ServeHTTP(rec, req)
+	healthHandler(nil, nil, newReadinessGate(), inv, nil, nil, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200 body=%s", rec.Code, rec.Body.String())
 	}

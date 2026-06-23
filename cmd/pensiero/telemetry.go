@@ -58,6 +58,12 @@ type QueryHotKey struct {
 	rawObject  string
 }
 
+type QueryUnresolvedClaim struct {
+	Claim   reasoning.Claim `json:"claim"`
+	Verdict string          `json:"verdict"`
+	Count   int             `json:"count"`
+}
+
 type QueryTelemetrySnapshot struct {
 	StartedAt     time.Time        `json:"started_at"`
 	Total         int64            `json:"total"`
@@ -330,6 +336,65 @@ func (t *queryTelemetry) HotKeys(n int) []QueryHotKey {
 			Count:       agg.count,
 			rawSubject:  event.rawSubject,
 			rawObject:   event.rawObject,
+		})
+	}
+	return out
+}
+
+func (t *queryTelemetry) UnresolvedClaims(n int) []QueryUnresolvedClaim {
+	if t == nil || n <= 0 {
+		return nil
+	}
+	t.mu.Lock()
+	events := t.retainedEventsLocked()
+	t.mu.Unlock()
+	type aggregate struct {
+		claim   reasoning.Claim
+		verdict string
+		count   int
+	}
+	byClaim := map[string]*aggregate{}
+	for _, event := range events {
+		switch reasoning.Verdict(event.Verdict) {
+		case reasoning.VerdictUnsupported, reasoning.VerdictContradicted:
+		default:
+			continue
+		}
+		claim := reasoning.Claim{
+			Subject:   strings.TrimSpace(event.rawSubject),
+			Predicate: strings.TrimSpace(event.Predicate),
+			Object:    strings.TrimSpace(event.rawObject),
+		}
+		key := claimDedupeKey(claim)
+		if key == "" {
+			continue
+		}
+		agg := byClaim[key]
+		if agg == nil {
+			agg = &aggregate{claim: claim, verdict: event.Verdict}
+			byClaim[key] = agg
+		}
+		agg.count++
+	}
+	aggregates := make([]*aggregate, 0, len(byClaim))
+	for _, agg := range byClaim {
+		aggregates = append(aggregates, agg)
+	}
+	sort.Slice(aggregates, func(i, j int) bool {
+		if aggregates[i].count != aggregates[j].count {
+			return aggregates[i].count > aggregates[j].count
+		}
+		return claimDedupeKey(aggregates[i].claim) < claimDedupeKey(aggregates[j].claim)
+	})
+	if len(aggregates) > n {
+		aggregates = aggregates[:n]
+	}
+	out := make([]QueryUnresolvedClaim, 0, len(aggregates))
+	for _, agg := range aggregates {
+		out = append(out, QueryUnresolvedClaim{
+			Claim:   agg.claim,
+			Verdict: agg.verdict,
+			Count:   agg.count,
 		})
 	}
 	return out

@@ -21,6 +21,7 @@ const grpcGracefulStopTimeout = 5 * time.Second
 type grpcReasoningRuntime struct {
 	server    *grpc.Server
 	store     *generationStore
+	cache     *proofCache
 	reloader  *snapshotReloader
 	telemetry *queryTelemetry
 	done      chan struct{}
@@ -70,6 +71,7 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 	runtime := &grpcReasoningRuntime{
 		server:    server,
 		store:     store,
+		cache:     cache,
 		reloader:  reloader,
 		telemetry: telemetry,
 		done:      make(chan struct{}),
