@@ -30,10 +30,12 @@ type serveOptions struct {
 	TaxonomicDir     string
 	RegistrySpec     string
 	HealthAddr       string
+	GRPCAddr         string
 	Interval         time.Duration
 	MinSupport       int
 	MinParentSupport int
 	MaxParentLevel   int
+	GRPCPoolSize     int
 	Once             bool
 }
 
@@ -66,6 +68,8 @@ func runServe(args []string) error {
 	fs.StringVar(&opts.TaxonomicDir, "taxonomic-direction", opts.TaxonomicDir, "hierarchy edge direction: child-to-parent or parent-to-child")
 	fs.StringVar(&opts.RegistrySpec, "registry", opts.RegistrySpec, "general or path to a registry JSON file")
 	fs.StringVar(&opts.HealthAddr, "health-addr", opts.HealthAddr, "health/metrics listen address; empty disables HTTP")
+	fs.StringVar(&opts.GRPCAddr, "grpc-addr", opts.GRPCAddr, "gRPC reasoning listen address; empty disables gRPC")
+	fs.IntVar(&opts.GRPCPoolSize, "grpc-pool-size", opts.GRPCPoolSize, "read-only graph handles for gRPC reasoning")
 	fs.BoolVar(&opts.Once, "once", opts.Once, "run one IGL pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -75,6 +79,12 @@ func runServe(args []string) error {
 	}
 	if strings.TrimSpace(opts.OutDir) == "" {
 		return fmt.Errorf("--out-dir is required")
+	}
+	if strings.TrimSpace(opts.GRPCAddr) != "" && opts.GRPCPoolSize <= 0 {
+		return fmt.Errorf("--grpc-pool-size must be positive")
+	}
+	if opts.Once && strings.TrimSpace(opts.GRPCAddr) != "" {
+		return fmt.Errorf("--once cannot be combined with --grpc-addr")
 	}
 	scopes, err := loadServeScopes(opts)
 	if err != nil {
@@ -108,15 +118,27 @@ func runServe(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	grpcEnabled := strings.TrimSpace(opts.GRPCAddr) != ""
+	readiness := newReadinessGate()
 	if opts.Once {
 		result, err := loop.RunOnce(ctx)
 		printPassResult(result)
 		return err
 	}
+	if !grpcEnabled {
+		readiness.MarkReady()
+	}
 	if strings.TrimSpace(opts.HealthAddr) != "" {
-		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, logger); err != nil {
+		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, readiness, logger); err != nil {
 			return err
 		}
+	}
+	if grpcEnabled {
+		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, readiness, logger)
+		if err != nil {
+			return err
+		}
+		defer grpcRuntime.Close(logger)
 	}
 	return loop.Run(ctx)
 }
@@ -132,10 +154,12 @@ func defaultServeOptions() serveOptions {
 		TaxonomicDir:     firstEnv("PENSIERO_TAXONOMIC_DIRECTION", string(generalization.TaxonomicDirectionChildToParent)),
 		RegistrySpec:     firstEnv("PENSIERO_REGISTRY", "general"),
 		HealthAddr:       firstEnv("PENSIERO_HEALTH_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:         os.Getenv("PENSIERO_GRPC_ADDR"),
 		Interval:         envDuration("PENSIERO_INTERVAL", time.Minute),
 		MinSupport:       envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
 		MinParentSupport: envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
 		MaxParentLevel:   envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),
+		GRPCPoolSize:     envInt("PENSIERO_GRPC_POOL_SIZE", defaultGRPCPoolSize),
 	}
 }
 
@@ -302,14 +326,17 @@ func scopeFromDescriptor(dir string, fileName string, desc scopeDescriptor, base
 	return generalization.Scope{Name: name, Config: cfg}, nil
 }
 
-func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, logger *log.Logger) (*http.Server, error) {
+func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, readiness *readinessGate, logger *log.Logger) (*http.Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		snapshot := metrics.Snapshot()
 		lastErr := lastMetricsError(snapshot)
 		status := "ok"
 		code := http.StatusOK
-		if lastErr != "" {
+		if !readiness.Ready() {
+			status = "starting"
+			code = http.StatusServiceUnavailable
+		} else if lastErr != "" {
 			status = "degraded"
 			code = http.StatusServiceUnavailable
 		}
