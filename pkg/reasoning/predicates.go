@@ -1,6 +1,9 @@
 package reasoning
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Characteristic is a GENERAL, domain-agnostic logical primitive a predicate
 // satisfies — the OWL/relational property characteristics the reasoner composes
@@ -85,6 +88,24 @@ func (r *PredicateRegistry) Canonical(raw string) (PredicateMeta, bool) {
 		}
 	}
 	return PredicateMeta{Raw: raw, Canonical: strings.TrimSpace(raw)}, false
+}
+
+// AllCanonical returns every known canonical predicate in deterministic order.
+func (r *PredicateRegistry) AllCanonical() []string {
+	if r == nil {
+		return nil
+	}
+	out := make([]string, 0, len(r.byCanon))
+	for _, m := range r.byCanon {
+		canon := strings.TrimSpace(m.Canonical)
+		if canon != "" {
+			out = append(out, canon)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return normKey(out[i]) < normKey(out[j])
+	})
+	return out
 }
 
 // Characteristics returns the general characteristics of a canonical predicate.

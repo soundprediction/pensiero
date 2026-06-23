@@ -40,6 +40,9 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		_ = pool.Close()
 		return nil, fmt.Errorf("create gRPC reasoner: %w", err)
 	}
+	if native, ok := reasoner.(*reasoning.NativeReasoner); ok {
+		native.SetEnforcePredicate(true)
+	}
 	reasoner = reasoning.NewPredicateConstrained(reasoner, reg)
 	listener, err := net.Listen("tcp", opts.GRPCAddr)
 	if err != nil {

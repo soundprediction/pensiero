@@ -10,10 +10,12 @@
 namespace lbug {
 namespace reasoning_extension {
 
-// CALL REASON_ENTAILS(subject STRING, predicate STRING, object STRING, max_hops INT64 := 4)
+// CALL REASON_ENTAILS(subject STRING, predicate STRING, object STRING, max_hops INT64 := 4,
+//                     accepted STRING := '')
 //   YIELD verdict STRING, confidence DOUBLE, proof STRING
 // Decides entailed | contradicted | unsupported for the claim, with the best
-// supporting/conflicting proof path (JSON).
+// supporting/conflicting proof path (JSON). Passing accepted opts into native
+// predicate enforcement; legacy arities keep v1 path-existence behavior.
 struct EntailsFunction {
     static constexpr const char* name = "REASON_ENTAILS";
     static function::function_set getFunctionSet();

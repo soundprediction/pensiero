@@ -1,6 +1,10 @@
 package reasoning
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 // The reasoning extension emits a proof as a JSON array of steps; parseProofJSON
 // must decode that into a Proof (deriving Source/Target/RuleClass/Hops) so callers
@@ -36,5 +40,60 @@ func TestParseProofObjectAndEmpty(t *testing.T) {
 		if _, ok := parseProofJSON(s); ok {
 			t.Fatalf("expected !ok for %q", s)
 		}
+	}
+}
+
+func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{
+		{Raw: "has symptom", Canonical: "has_symptom", InverseOf: "symptom_of"},
+		{Canonical: "has_phenotype", InverseOf: "phenotype_of", SubPropertyOf: []string{"has_symptom"}},
+		{Canonical: "symptom_of", InverseOf: "has_symptom"},
+		{Canonical: "phenotype_of", InverseOf: "has_phenotype", SubPropertyOf: []string{"symptom_of"}},
+	}, nil, nil)
+	var entailsQuery string
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if strings.Contains(q, "REASON_ENTAILS") {
+			entailsQuery = q
+			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+		}
+		return nil, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{})
+	n.EnforcePredicate = true
+
+	_, err := n.Entails(context.Background(), Claim{
+		Subject: "flu", Predicate: "has symptom", Object: "fever",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "CALL REASON_ENTAILS('flu', 'has symptom', 'fever', 4, 'has_phenotype,has_symptom,phenotype_of,symptom_of')"
+	if !strings.Contains(entailsQuery, want) {
+		t.Fatalf("query=%q, want to contain %q", entailsQuery, want)
+	}
+}
+
+func TestNativeReasonerEntailsKeepsLegacyArityByDefault(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
+	var entailsQuery string
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if strings.Contains(q, "REASON_ENTAILS") {
+			entailsQuery = q
+			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+		}
+		return nil, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{})
+
+	_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "CALL REASON_ENTAILS('s', 'p', 'o', 4) YIELD"
+	if !strings.Contains(entailsQuery, want) {
+		t.Fatalf("query=%q, want legacy arity containing %q", entailsQuery, want)
+	}
+	if strings.Contains(entailsQuery, "'p') YIELD") {
+		t.Fatalf("query=%q unexpectedly used accepted predicate arity", entailsQuery)
 	}
 }

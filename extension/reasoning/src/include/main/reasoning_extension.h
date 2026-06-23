@@ -9,7 +9,7 @@
 // with proof paths and Context-Monoid confidence).
 //
 // Registered functions (see reasoning_function.h):
-//   CALL REASON_ENTAILS(subject, predicate, object [, max_hops])
+//   CALL REASON_ENTAILS(subject, predicate, object [, max_hops [, accepted]])
 //        YIELD verdict, confidence, proof
 //   CALL REASON_DERIVE(source, target [, max_hops [, min_conf]])
 //        YIELD target, confidence, hops, proof

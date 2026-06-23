@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -24,9 +25,10 @@ func init() {
 // over a GraphQuerier (the go-predicato ladybug driver adapter). The extension
 // must be loaded in the session (LOAD EXTENSION 'reasoning'); EnsureLoaded does it.
 type NativeReasoner struct {
-	g   GraphQuerier
-	reg *PredicateRegistry
-	cfg Config
+	g                GraphQuerier
+	reg              *PredicateRegistry
+	cfg              Config
+	EnforcePredicate bool
 }
 
 func NewNativeReasoner(g GraphQuerier, reg *PredicateRegistry, cfg Config) *NativeReasoner {
@@ -34,6 +36,13 @@ func NewNativeReasoner(g GraphQuerier, reg *PredicateRegistry, cfg Config) *Nati
 }
 
 func (n *NativeReasoner) Name() string { return NativeBackendName }
+
+// SetEnforcePredicate opts the native backend into passing an accepted-predicate
+// set to REASON_ENTAILS. The zero value is false for legacy path-existence calls.
+func (n *NativeReasoner) SetEnforcePredicate(enforce bool) *NativeReasoner {
+	n.EnforcePredicate = enforce
+	return n
+}
 
 // EnsureLoaded loads the reasoning extension into the current session (idempotent
 // at the driver level). Call once per connection before reasoning.
@@ -52,6 +61,12 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 	q := fmt.Sprintf(
 		"CALL REASON_ENTAILS(%s, %s, %s, %d) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
 		cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops)
+	if n.EnforcePredicate {
+		accepted := strings.Join(nativeAcceptedPredicates(n.reg, c.Predicate), ",")
+		q = fmt.Sprintf(
+			"CALL REASON_ENTAILS(%s, %s, %s, %d, %s) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
+			cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops, cyStr(accepted))
+	}
 	rows, err := n.g.Query(ctx, q, nil)
 	if err != nil {
 		return EntailResult{}, fmt.Errorf("REASON_ENTAILS: %w", err)
@@ -71,6 +86,33 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 		res.Verdict = VerdictUnsupported
 	}
 	return res, nil
+}
+
+func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string {
+	target := canonicalPredicate(reg, predicate)
+	seen := map[string]bool{}
+	var out []string
+	add := func(pred string) {
+		pred = canonicalPredicate(reg, pred)
+		key := normKey(pred)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, pred)
+	}
+	for _, pred := range predicatesEntailing(reg, target) {
+		add(pred)
+	}
+	if inverse, ok := reg.Inverse(target); ok {
+		for _, pred := range predicatesEntailing(reg, inverse) {
+			add(pred)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return normKey(out[i]) < normKey(out[j])
+	})
+	return out
 }
 
 // Derive calls CALL REASON_DERIVE(source, target, max_hops, min_conf).

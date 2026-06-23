@@ -1,6 +1,14 @@
 package reasoning
 
+import (
+	"sort"
+	"strings"
+)
+
 func canonicalPredicate(reg *PredicateRegistry, pred string) string {
+	if reg == nil {
+		return strings.TrimSpace(pred)
+	}
 	meta, _ := reg.Canonical(pred)
 	return meta.Canonical
 }
@@ -166,4 +174,35 @@ func proofEntailsPredicate(reg *PredicateRegistry, effective, target string, inc
 		return predicateEntails(reg, effective, inverse)
 	}
 	return false
+}
+
+// predicatesEntailing returns every known canonical predicate P' such that
+// P' ⊑* target. Equality counts; inverse matching is handled by callers that need
+// it so this function remains a pure sub-property closure.
+func predicatesEntailing(reg *PredicateRegistry, target string) []string {
+	target = canonicalPredicate(reg, target)
+	if strings.TrimSpace(target) == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(pred string) {
+		pred = canonicalPredicate(reg, pred)
+		key := normKey(pred)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, pred)
+	}
+	for _, pred := range reg.AllCanonical() {
+		if proofEntailsPredicate(reg, pred, target, false) {
+			add(pred)
+		}
+	}
+	add(target)
+	sort.Slice(out, func(i, j int) bool {
+		return normKey(out[i]) < normKey(out[j])
+	})
+	return out
 }
