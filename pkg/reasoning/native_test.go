@@ -58,7 +58,7 @@ func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
 		}
 		return nil, nil
 	}}
-	n := NewNativeReasoner(g, reg, Config{})
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
 	n.EnforcePredicate = true
 
 	_, err := n.Entails(context.Background(), Claim{
@@ -88,7 +88,7 @@ func TestNativeReasonerEntailsEscapesAcceptedPredicateList(t *testing.T) {
 		}
 		return nil, nil
 	}}
-	n := NewNativeReasoner(g, reg, Config{})
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
 	n.EnforcePredicate = true
 
 	_, err := n.Entails(context.Background(), Claim{
@@ -103,17 +103,20 @@ func TestNativeReasonerEntailsEscapesAcceptedPredicateList(t *testing.T) {
 	}
 }
 
-func TestNativeReasonerEntailsKeepsLegacyArityByDefault(t *testing.T) {
+func TestNativeReasonerEntailsKeepsLegacyArityWhenQuarantineDisabled(t *testing.T) {
 	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
 	var entailsQuery string
 	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+			return rows, nil
+		}
 		if strings.Contains(q, "REASON_ENTAILS") {
 			entailsQuery = q
 			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
 		}
 		return nil, nil
 	}}
-	n := NewNativeReasoner(g, reg, Config{})
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
 
 	_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
 	if err != nil {
@@ -126,4 +129,251 @@ func TestNativeReasonerEntailsKeepsLegacyArityByDefault(t *testing.T) {
 	if strings.Contains(entailsQuery, "'p') YIELD") {
 		t.Fatalf("query=%q unexpectedly used accepted predicate arity", entailsQuery)
 	}
+}
+
+func TestNativeReasonerEntailsSchemaGatesQuarantineFlag(t *testing.T) {
+	t.Run("without status keeps legacy arity", func(t *testing.T) {
+		reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{})
+
+		_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "CALL REASON_ENTAILS('s', 'p', 'o', 4) YIELD"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want legacy arity containing %q", gotQuery, want)
+		}
+		if strings.Contains(gotQuery, ", true) YIELD") {
+			t.Fatalf("query=%q unexpectedly contained quarantine flag", gotQuery)
+		}
+	})
+
+	t.Run("without status keeps accepted-predicate arity", func(t *testing.T) {
+		reg := NewPredicateRegistry([]PredicateMeta{
+			{Canonical: "p"},
+			{Canonical: "child_p", SubPropertyOf: []string{"p"}},
+		}, nil, nil)
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{})
+		n.EnforcePredicate = true
+
+		_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "CALL REASON_ENTAILS('s', 'p', 'o', 4, 'child_p,p') YIELD"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want accepted-predicate arity containing %q", gotQuery, want)
+		}
+		if strings.Contains(gotQuery, ", true) YIELD") {
+			t.Fatalf("query=%q unexpectedly contained quarantine flag", gotQuery)
+		}
+	})
+}
+
+func TestNativeReasonerEntailsDefaultsToNativeQuarantineFlag(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
+	var gotQuery string
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+			return rows, nil
+		}
+		gotQuery = q
+		return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{})
+
+	_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "CALL REASON_ENTAILS('s', 'p', 'o', 4, '', true) YIELD"
+	if !strings.Contains(gotQuery, want) {
+		t.Fatalf("query=%q, want native quarantine arity containing %q", gotQuery, want)
+	}
+	if strings.Contains(gotQuery, "[n IN nodes(p) WHERE") {
+		t.Fatalf("query=%q unexpectedly used Go-engine list comprehension", gotQuery)
+	}
+}
+
+func TestNativeReasonerEntailsCombinesPredicateEnforcementWithQuarantineFlag(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{
+		{Canonical: "p"},
+		{Canonical: "child_p", SubPropertyOf: []string{"p"}},
+	}, nil, nil)
+	var gotQuery string
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+			return rows, nil
+		}
+		gotQuery = q
+		return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{})
+	n.EnforcePredicate = true
+
+	_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "CALL REASON_ENTAILS('s', 'p', 'o', 4, 'child_p,p', true) YIELD"
+	if !strings.Contains(gotQuery, want) {
+		t.Fatalf("query=%q, want accepted predicates plus quarantine flag containing %q", gotQuery, want)
+	}
+}
+
+func TestNativeReasonerDeriveUsesNativeQuarantineFlag(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
+	t.Run("default without status keeps legacy arity", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{})
+
+		if _, err := n.Derive(context.Background(), DeriveRequest{Source: "s", Target: "o"}); err != nil {
+			t.Fatal(err)
+		}
+		want := "CALL REASON_DERIVE('s', 'o', 4, 0.05) YIELD"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want legacy arity containing %q", gotQuery, want)
+		}
+		if strings.Contains(gotQuery, "true) YIELD") {
+			t.Fatalf("query=%q unexpectedly contained quarantine flag", gotQuery)
+		}
+	})
+
+	t.Run("default with status passes native flag", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{})
+
+		if _, err := n.Derive(context.Background(), DeriveRequest{Source: "s", Target: "o"}); err != nil {
+			t.Fatal(err)
+		}
+		want := "CALL REASON_DERIVE('s', 'o', 4, 0.05, true) YIELD"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want native quarantine arity containing %q", gotQuery, want)
+		}
+		if strings.Contains(gotQuery, "[n IN nodes(p) WHERE") {
+			t.Fatalf("query=%q unexpectedly used Go-engine list comprehension", gotQuery)
+		}
+	})
+
+	t.Run("explicit false keeps legacy arity", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+
+		if _, err := n.Derive(context.Background(), DeriveRequest{Source: "s", Target: "o"}); err != nil {
+			t.Fatal(err)
+		}
+		want := "CALL REASON_DERIVE('s', 'o', 4, 0.05) YIELD"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want legacy arity containing %q", gotQuery, want)
+		}
+		if strings.Contains(gotQuery, "true) YIELD") {
+			t.Fatalf("query=%q unexpectedly contained quarantine flag", gotQuery)
+		}
+	})
+}
+
+func TestNativeReasonerContradictsHonorsExcludeDeduced(t *testing.T) {
+	reg := NewPredicateRegistry(
+		[]PredicateMeta{{Canonical: "p"}, {Canonical: "q"}},
+		nil,
+		[]DisjointPair{{A: "p", B: "q"}},
+	)
+	t.Run("default omits status exclusion without schema support", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{})
+
+		_, _, err := n.Contradicts(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(gotQuery, ".status") {
+			t.Fatalf("query=%q unexpectedly contained status reference", gotQuery)
+		}
+	})
+
+	t.Run("default excludes deduced and speculative predicate nodes when status exists", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{})
+
+		_, _, err := n.Contradicts(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "lower(coalesce(r.status,'')) NOT IN ['deduced','speculative']"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want status exclusion containing %q", gotQuery, want)
+		}
+	})
+
+	t.Run("explicit false omits status exclusion", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		n := NewNativeReasoner(g, reg, Config{MaxHops: 4}.WithExcludeDeduced(false))
+
+		_, _, err := n.Contradicts(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(gotQuery, "lower(coalesce(r.status,'')) NOT IN ['deduced','speculative']") {
+			t.Fatalf("query=%q unexpectedly contained status exclusion", gotQuery)
+		}
+	})
 }

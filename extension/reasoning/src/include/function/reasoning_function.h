@@ -11,17 +11,19 @@ namespace lbug {
 namespace reasoning_extension {
 
 // CALL REASON_ENTAILS(subject STRING, predicate STRING, object STRING, max_hops INT64 := 4,
-//                     accepted STRING := '')
+//                     accepted STRING := '', exclude_deduced BOOL := false)
 //   YIELD verdict STRING, confidence DOUBLE, proof STRING
 // Decides entailed | contradicted | unsupported for the claim, with the best
 // supporting/conflicting proof path (JSON). Passing accepted opts into native
-// predicate enforcement; legacy arities keep v1 path-existence behavior.
+// predicate enforcement; passing exclude_deduced opts into deduced/speculative
+// predicate-node quarantine. Legacy arities keep v1 path-existence behavior.
 struct EntailsFunction {
     static constexpr const char* name = "REASON_ENTAILS";
     static function::function_set getFunctionSet();
 };
 
-// CALL REASON_DERIVE(source STRING, target STRING := '', max_hops INT64 := 4, min_conf DOUBLE := 0.05)
+// CALL REASON_DERIVE(source STRING, target STRING := '', max_hops INT64 := 4,
+//                    min_conf DOUBLE := 0.05, exclude_deduced BOOL := false)
 //   YIELD target STRING, confidence DOUBLE, hops INT64, proof STRING
 // Ranked multi-hop proof paths from source toward target (or any target).
 struct DeriveFunction {

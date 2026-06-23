@@ -44,7 +44,7 @@ struct ReasonRow {
 };
 
 // ===========================================================================
-// REASON_ENTAILS(subject, predicate, object [, max_hops [, accepted]])
+// REASON_ENTAILS(subject, predicate, object [, max_hops [, accepted [, exclude_deduced]]])
 //   YIELD verdict STRING, confidence DOUBLE, proof STRING
 // ===========================================================================
 
@@ -76,7 +76,7 @@ static offset_t entailsTableFunc(const TableFuncMorsel& morsel, const TableFuncI
 // Forward declaration of the real reasoning core (implemented further below).
 std::vector<ReasonRow> runEntails(ClientContext* context, const std::string& subject,
     const std::string& predicate, const std::string& object, int64_t maxHops,
-    const std::string& accepted);
+    const std::string& accepted, bool excludeDeduced);
 
 static std::unique_ptr<TableFuncBindData> entailsBindFunc(ClientContext* context,
     const TableFuncBindInput* input) {
@@ -91,6 +91,10 @@ static std::unique_ptr<TableFuncBindData> entailsBindFunc(ClientContext* context
     if (input->params.size() > 4) {
         accepted = input->getLiteralVal<std::string>(4);
     }
+    bool excludeDeduced = false;
+    if (input->params.size() > 5) {
+        excludeDeduced = input->getValue(5).getValue<bool>();
+    }
 
     std::vector<std::string> columnNames;
     std::vector<LogicalType> columnTypes;
@@ -103,7 +107,8 @@ static std::unique_ptr<TableFuncBindData> entailsBindFunc(ClientContext* context
     columnNames = TableFunction::extractYieldVariables(columnNames, input->yieldVariables);
     auto columns = input->binder->createVariables(columnNames, columnTypes);
 
-    auto rows = runEntails(context, subject, predicate, object, maxHops, accepted);
+    auto rows = runEntails(context, subject, predicate, object, maxHops, accepted,
+        excludeDeduced);
     auto numRows = rows.size();
     return std::make_unique<EntailsBindData>(std::move(rows), std::move(columns), numRows);
 }
@@ -112,12 +117,15 @@ function_set EntailsFunction::getFunctionSet() {
     function_set result;
     // Legacy arities keep v1 path-existence semantics. The 5-arg arity is opt-in
     // predicate enforcement: accepted is a comma-separated canonical predicate set.
+    // The 6-arg arity additionally opts into deduced/speculative path quarantine.
     std::vector<std::vector<LogicalTypeID>> sigs = {
         {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING},
         {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING,
             LogicalTypeID::INT64},
         {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::INT64,
-            LogicalTypeID::STRING}};
+            LogicalTypeID::STRING},
+        {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::INT64,
+            LogicalTypeID::STRING, LogicalTypeID::BOOL}};
     for (auto& sig : sigs) {
         auto func = std::make_unique<TableFunction>(EntailsFunction::name, sig);
         func->bindFunc = entailsBindFunc;
@@ -131,7 +139,7 @@ function_set EntailsFunction::getFunctionSet() {
 }
 
 // ===========================================================================
-// REASON_DERIVE(source, target [, max_hops [, min_conf]])
+// REASON_DERIVE(source, target [, max_hops [, min_conf [, exclude_deduced]]])
 //   YIELD target STRING, confidence DOUBLE, hops INT64, proof STRING
 // ===========================================================================
 
@@ -161,7 +169,8 @@ static offset_t deriveTableFunc(const TableFuncMorsel& morsel, const TableFuncIn
 }
 
 std::vector<ReasonRow> runDerive(ClientContext* context, const std::string& source,
-    const std::string& target, int64_t maxHops, double minConf, int64_t limit);
+    const std::string& target, int64_t maxHops, double minConf, int64_t limit,
+    bool excludeDeduced);
 
 static std::unique_ptr<TableFuncBindData> deriveBindFunc(ClientContext* context,
     const TableFuncBindInput* input) {
@@ -180,6 +189,10 @@ static std::unique_ptr<TableFuncBindData> deriveBindFunc(ClientContext* context,
         // 0.17.0 host lib; read the literal Value and extract the double from it.
         minConf = input->getValue(3).getValue<double>();
     }
+    bool excludeDeduced = false;
+    if (input->params.size() > 4) {
+        excludeDeduced = input->getValue(4).getValue<bool>();
+    }
 
     std::vector<std::string> columnNames;
     std::vector<LogicalType> columnTypes;
@@ -194,19 +207,23 @@ static std::unique_ptr<TableFuncBindData> deriveBindFunc(ClientContext* context,
     columnNames = TableFunction::extractYieldVariables(columnNames, input->yieldVariables);
     auto columns = input->binder->createVariables(columnNames, columnTypes);
 
-    auto rows = runDerive(context, source, target, maxHops, minConf, 8 /* limit */);
+    auto rows = runDerive(context, source, target, maxHops, minConf, 8 /* limit */,
+        excludeDeduced);
     auto numRows = rows.size();
     return std::make_unique<DeriveBindData>(std::move(rows), std::move(columns), numRows);
 }
 
 function_set DeriveFunction::getFunctionSet() {
     function_set result;
-    // Arities: (source, target), (..., max_hops), (..., max_hops, min_conf).
+    // Arities: (source, target), (..., max_hops), (..., max_hops, min_conf),
+    // (..., max_hops, min_conf, exclude_deduced).
     std::vector<std::vector<LogicalTypeID>> sigs = {
         {LogicalTypeID::STRING, LogicalTypeID::STRING},
         {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::INT64},
         {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::INT64,
-            LogicalTypeID::DOUBLE}};
+            LogicalTypeID::DOUBLE},
+        {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::INT64,
+            LogicalTypeID::DOUBLE, LogicalTypeID::BOOL}};
     for (auto& sig : sigs) {
         auto func = std::make_unique<TableFunction>(DeriveFunction::name, sig);
         func->bindFunc = deriveBindFunc;
@@ -433,7 +450,7 @@ std::vector<std::string> readStringList(Value* v) {
 // Run the anchored, bounded reified-path query and return up to `limit` shortest
 // logical paths from `source` to `target` (target optional/empty = any endpoint).
 std::vector<LogicalPath> findPaths(ClientContext* context, const std::string& source,
-    const std::string& target, int64_t maxHops, int64_t limit) {
+    const std::string& target, int64_t maxHops, int64_t limit, bool excludeDeduced) {
     if (maxHops < 1) {
         maxHops = 1;
     }
@@ -457,6 +474,9 @@ std::vector<LogicalPath> findPaths(ClientContext* context, const std::string& so
     // labels[] column; predicate (RelatesToNode_) nodes do not, so guard on label(n).
     q << " WHERE all(n IN nodes(p) WHERE label(n) <> 'Entity'"
       << " OR NOT 'GENE' IN coalesce(n.labels, []))"
+      << (excludeDeduced
+              ? " AND all(n IN nodes(p) WHERE label(n) <> 'RelatesToNode_' OR lower(coalesce(n.status, '')) NOT IN ['deduced','speculative'])"
+              : "")
       // Use label(n) to separate predicate nodes (RelatesToNode_) from Entity nodes;
       // an Entity may legitimately have empty labels[], so labels-size is not a safe
       // discriminator. list_filter / list_transform are this engine's comprehension.
@@ -555,12 +575,12 @@ std::string buildProof(const LogicalPath& p) {
 
 std::vector<ReasonRow> runEntails(ClientContext* context, const std::string& subject,
     const std::string& /*predicate*/, const std::string& object, int64_t maxHops,
-    const std::string& accepted) {
+    const std::string& accepted, bool excludeDeduced) {
     // v1 compatibility: with no accepted predicate set, presence of an anchored,
     // bounded reified path subject ⇝ object entails the claim (§2.1/§2.4
     // composition; the predicate is recorded in the proof). Passing accepted opts
     // into native predicate filtering without changing legacy arities.
-    auto paths = findPaths(context, subject, object, maxHops, 8);
+    auto paths = findPaths(context, subject, object, maxHops, 8, excludeDeduced);
     ReasonRow r;
     if (paths.empty()) {
         r.verdict = "unsupported";
@@ -607,8 +627,9 @@ std::vector<ReasonRow> runEntails(ClientContext* context, const std::string& sub
 }
 
 std::vector<ReasonRow> runDerive(ClientContext* context, const std::string& source,
-    const std::string& target, int64_t maxHops, double minConf, int64_t limit) {
-    auto paths = findPaths(context, source, target, maxHops, limit);
+    const std::string& target, int64_t maxHops, double minConf, int64_t limit,
+    bool excludeDeduced) {
+    auto paths = findPaths(context, source, target, maxHops, limit, excludeDeduced);
     std::vector<ReasonRow> rows;
     rows.reserve(paths.size());
     for (const auto& p : paths) {

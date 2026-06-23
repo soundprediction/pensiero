@@ -13,14 +13,20 @@ import (
 // driver code — the GraphQuerier abstracts the graph — so it is pure Go and
 // unit-testable with a mock.
 type Engine struct {
-	g   GraphQuerier
-	reg *PredicateRegistry
-	cfg Config
+	g                   GraphQuerier
+	reg                 *PredicateRegistry
+	cfg                 Config
+	hasProvenanceStatus bool
 }
 
 // NewEngine constructs the symbolic engine.
 func NewEngine(g GraphQuerier, reg *PredicateRegistry, cfg Config) *Engine {
-	return &Engine{g: g, reg: reg, cfg: cfg.withDefaults()}
+	return &Engine{
+		g:                   g,
+		reg:                 reg,
+		cfg:                 cfg.withDefaults(),
+		hasProvenanceStatus: probeProvenanceStatus(context.Background(), g),
+	}
 }
 
 // Name implements Reasoner.
@@ -37,7 +43,7 @@ func (e *Engine) Name() string { return BackendName }
 //	hops       int       // logical hops
 func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error) {
 	req = e.applyDefaults(req)
-	rows, err := e.g.Query(ctx, compositionCypher(req), compositionParams(req))
+	rows, err := e.g.Query(ctx, compositionCypher(req, e.excludeDeduced()), compositionParams(req))
 	if err != nil {
 		return nil, fmt.Errorf("reasoning.Derive: %w", err)
 	}
@@ -68,6 +74,10 @@ func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error)
 		proofs = proofs[:req.Limit]
 	}
 	return proofs, nil
+}
+
+func (e *Engine) excludeDeduced() bool {
+	return e.cfg.ExcludeDeduced && e.hasProvenanceStatus
 }
 
 // Entails decides whether the claim is symbolically supported, contradicted, or

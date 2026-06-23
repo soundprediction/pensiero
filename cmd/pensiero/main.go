@@ -148,7 +148,7 @@ func runBuildGeneralization(args []string) error {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
+	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path] [--golden-file file]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
 }
 
 func readScopeEntities(path string) ([]string, error) {

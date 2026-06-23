@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,43 +20,55 @@ const grpcGracefulStopTimeout = 5 * time.Second
 
 type grpcReasoningRuntime struct {
 	server   *grpc.Server
-	pool     *pooledGraphQuerier
+	store    *generationStore
+	reloader *snapshotReloader
 	done     chan struct{}
 	stopOnce sync.Once
 }
 
 func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
-	initHandle, err := graphHandleInitializerForBackend(opts.Backend, opts.ReasoningExt)
+	buildGeneration, err := generationBuilderForServe(opts, reg)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := newPooledGraphQuerier(opts.SourcePath, opts.GRPCPoolSize, initHandle)
+	goldenSet, err := loadGoldenSet(opts.GoldenFile)
+	if err != nil {
+		return nil, fmt.Errorf("load golden file: %w", err)
+	}
+	validator := snapshotValidator{
+		Golden:   goldenSet,
+		Registry: reg,
+	}
+	initial, err := buildGeneration(ctx, opts.SourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("load gRPC serving graph: %w", err)
 	}
-	// Zero values are intentional here: reasoning.Config.withDefaults supplies
-	// MaxHops, Decay, MinConf, Limit, and TauHigh for serving requests.
-	reasoner, err := reasoning.New(opts.Backend, pool, reg, reasoning.Config{})
-	if err != nil {
-		_ = pool.Close()
-		return nil, fmt.Errorf("create gRPC reasoner: %w", err)
+	if err := validator.Validate(ctx, initial); err != nil {
+		closeGeneration(initial)
+		return nil, err
 	}
-	if native, ok := reasoner.(*reasoning.NativeReasoner); ok {
-		native.SetEnforcePredicate(true)
+	store := newGenerationStore(initial)
+	reloader := newSnapshotReloader(opts.SourcePath, opts.Interval, buildGeneration, validator.Validate, store, logger)
+	if fp, err := snapshotFingerprintForPath(opts.SourcePath); err == nil {
+		reloader.setLast(fp)
 	}
-	reasoner = reasoning.NewPredicateConstrained(reasoner, reg)
+	reloader.Start(ctx)
+
 	listener, err := net.Listen("tcp", opts.GRPCAddr)
 	if err != nil {
-		_ = pool.Close()
+		reloader.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("grpc listen %s: %w", opts.GRPCAddr, err)
 	}
 
 	server := grpc.NewServer()
+	reasoner := reasoning.NewPredicateConstrained(&storeReasoner{store: store}, reg)
 	grpcsvc.NewServer(reasoner).Register(server)
 	runtime := &grpcReasoningRuntime{
-		server: server,
-		pool:   pool,
-		done:   make(chan struct{}),
+		server:   server,
+		store:    store,
+		reloader: reloader,
+		done:     make(chan struct{}),
 	}
 	go func() {
 		select {
@@ -65,7 +78,7 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		}
 	}()
 	go func() {
-		logger.Printf("grpc addr=%s backend=%s graph=%s pool_size=%d", listener.Addr().String(), reasoner.Name(), opts.SourcePath, opts.GRPCPoolSize)
+		logger.Printf("grpc addr=%s backend=%s graph=%s generation=%s pool_size=%d", listener.Addr().String(), reasoner.Name(), opts.SourcePath, initial.id, opts.GRPCPoolSize)
 		readiness.MarkReady()
 		if err := server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			logger.Printf("grpc error=%v", err)
@@ -73,6 +86,39 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		close(runtime.done)
 	}()
 	return runtime, nil
+}
+
+func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegistry) (generationBuilder, error) {
+	initHandle, err := graphHandleInitializerForBackend(opts.Backend, opts.ReasoningExt)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, path string) (*generation, error) {
+		pool, err := newPooledGraphQuerier(path, opts.GRPCPoolSize, initHandle)
+		if err != nil {
+			return nil, err
+		}
+		// Zero values are intentional here: reasoning.Config.withDefaults supplies
+		// MaxHops, Decay, MinConf, Limit, TauHigh, and ExcludeDeduced for serving requests.
+		reasoner, err := reasoning.New(opts.Backend, pool, reg, reasoning.Config{})
+		if err != nil {
+			_ = pool.Close()
+			return nil, fmt.Errorf("create gRPC reasoner: %w", err)
+		}
+		if native, ok := reasoner.(*reasoning.NativeReasoner); ok {
+			native.SetEnforcePredicate(true)
+		}
+		return &generation{
+			id:       newGenerationID(path),
+			pool:     pool,
+			reasoner: reasoner,
+			path:     path,
+		}, nil
+	}, nil
+}
+
+func newGenerationID(path string) string {
+	return fmt.Sprintf("%s-%d", filepath.Base(path), time.Now().UTC().UnixNano())
 }
 
 func graphHandleInitializerForBackend(backend string, reasoningExt string) (graphHandleInitializer, error) {
@@ -108,6 +154,9 @@ func cypherString(s string) string {
 
 func (r *grpcReasoningRuntime) Close(logger *log.Logger) {
 	r.stopOnce.Do(func() {
+		if r.reloader != nil {
+			r.reloader.Close()
+		}
 		gracefulDone := make(chan struct{})
 		go func() {
 			r.server.GracefulStop()
@@ -123,8 +172,10 @@ func (r *grpcReasoningRuntime) Close(logger *log.Logger) {
 			<-gracefulDone
 		}
 		<-r.done
-		if err := r.pool.Close(); err != nil && logger != nil {
-			logger.Printf("grpc pool close error=%v", err)
+		if r.store != nil {
+			if err := r.store.Close(); err != nil && logger != nil {
+				logger.Printf("grpc generation store close error=%v", err)
+			}
 		}
 	})
 }

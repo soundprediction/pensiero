@@ -15,8 +15,25 @@ func (m mockGraph) Query(_ context.Context, q string, params map[string]any) ([]
 	return m.query(q, params)
 }
 
+func provenanceStatusProbeRows(hasStatus bool) []map[string]any {
+	if hasStatus {
+		return []map[string]any{{"name": "status"}}
+	}
+	return []map[string]any{{"name": "uuid"}, {"name": "name"}, {"name": "confidence"}}
+}
+
+func answerProvenanceStatusProbe(q string, hasStatus bool) ([]map[string]any, bool) {
+	if q != provenanceStatusProbeCypher {
+		return nil, false
+	}
+	return provenanceStatusProbeRows(hasStatus), true
+}
+
 func engineWithRegistryAndRows(reg *PredicateRegistry, rows ...map[string]any) *Engine {
 	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+			return rows, nil
+		}
 		if strings.Contains(q, "OntologyDisjoint") {
 			return nil, nil
 		}
@@ -46,6 +63,66 @@ func proofRow(target string, preds ...string) map[string]any {
 		"target":     target,
 		"hops":       len(preds),
 	}
+}
+
+func TestEngineCompositionCypherHonorsExcludeDeduced(t *testing.T) {
+	t.Run("default omits status exclusion without schema support", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		e := NewEngine(g, DefaultGeneralRegistry(), Config{})
+
+		if _, err := e.Derive(context.Background(), DeriveRequest{Source: "a"}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(gotQuery, ".status") {
+			t.Fatalf("query=%q unexpectedly contained status reference", gotQuery)
+		}
+	})
+
+	t.Run("default excludes deduced and speculative predicate nodes when status exists", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		e := NewEngine(g, DefaultGeneralRegistry(), Config{})
+
+		if _, err := e.Derive(context.Background(), DeriveRequest{Source: "a"}); err != nil {
+			t.Fatal(err)
+		}
+		want := "lower(coalesce(n.status,'')) IN ['deduced','speculative']"
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query=%q, want status exclusion containing %q", gotQuery, want)
+		}
+	})
+
+	t.Run("explicit false omits status exclusion even when status exists", func(t *testing.T) {
+		var gotQuery string
+		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+			if rows, ok := answerProvenanceStatusProbe(q, true); ok {
+				return rows, nil
+			}
+			gotQuery = q
+			return nil, nil
+		}}
+		e := NewEngine(g, DefaultGeneralRegistry(), Config{MaxHops: 4}.WithExcludeDeduced(false))
+
+		if _, err := e.Derive(context.Background(), DeriveRequest{Source: "a"}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(gotQuery, "lower(coalesce(n.status,'')) IN ['deduced','speculative']") {
+			t.Fatalf("query=%q unexpectedly contained status exclusion", gotQuery)
+		}
+	})
 }
 
 func TestEngineEntailsDirectPredicate(t *testing.T) {
@@ -310,6 +387,9 @@ func TestEffectivePredicateRejectsEmptyPredicates(t *testing.T) {
 func TestEngineContradictionOverridesSupport(t *testing.T) {
 	supportQueries := 0
 	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+			return rows, nil
+		}
 		if strings.Contains(q, "OntologyDisjoint") {
 			if params["a"] == "bad_class" && params["b"] == "bad_object" {
 				return []map[string]any{{"source": "test"}}, nil

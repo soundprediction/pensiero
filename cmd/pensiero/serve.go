@@ -35,6 +35,7 @@ type serveOptions struct {
 	GRPCAddr          string
 	Backend           string
 	ReasoningExt      string
+	GoldenFile        string
 	Interval          time.Duration
 	MinSupport        int
 	MinParentSupport  int
@@ -77,6 +78,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.GRPCPoolSize, "grpc-pool-size", opts.GRPCPoolSize, "read-only graph handles for gRPC reasoning")
 	fs.StringVar(&opts.Backend, "backend", opts.Backend, "gRPC reasoning backend: ladybug-native or symbolic-graph")
 	fs.StringVar(&opts.ReasoningExt, "reasoning-extension", opts.ReasoningExt, "reasoning extension path/name; empty loads reasoning by name")
+	fs.StringVar(&opts.GoldenFile, "golden-file", opts.GoldenFile, "optional JSON golden claims for validating gRPC snapshot reloads")
 	fs.BoolVar(&opts.Once, "once", opts.Once, "run one IGL pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -169,6 +171,7 @@ func defaultServeOptions() serveOptions {
 		GRPCAddr:          os.Getenv("PENSIERO_GRPC_ADDR"),
 		Backend:           reasoning.NativeBackendName,
 		ReasoningExt:      os.Getenv("PENSIERO_REASONING_EXTENSION"),
+		GoldenFile:        os.Getenv("PENSIERO_GOLDEN_FILE"),
 		Interval:          envDuration("PENSIERO_INTERVAL", time.Minute),
 		MinSupport:        envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
 		MinParentSupport:  envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
