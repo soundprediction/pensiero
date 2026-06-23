@@ -13,6 +13,9 @@ func (b *Builder) scopeEntities(ctx context.Context) ([]EntityRef, error) {
 	if len(b.cfg.ScopeEntities) > 0 {
 		out := make([]EntityRef, 0, len(b.cfg.ScopeEntities))
 		for _, raw := range b.cfg.ScopeEntities {
+			if err := checkBuildContext(ctx); err != nil {
+				return nil, err
+			}
 			raw = strings.TrimSpace(raw)
 			if raw == "" {
 				continue
@@ -30,6 +33,9 @@ func (b *Builder) scopeEntities(ctx context.Context) ([]EntityRef, error) {
 	}
 	out := make([]EntityRef, 0, len(rows))
 	for _, row := range rows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		ref := EntityRef{ID: anyString(row["id"]), Name: anyString(row["name"])}
 		if ref.ID == "" {
 			ref.ID = anyString(row["uuid"])
@@ -51,6 +57,9 @@ func (b *Builder) taxonomy(ctx context.Context, scope []EntityRef, taxonomic []s
 	frontier := hierarchy.scopeRefs()
 	queried := map[string]bool{}
 	for level := 0; level < cfg.MaxParentLevel && len(frontier) > 0; level++ {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		frontier = unqueriedTaxonomyRefs(frontier, queried)
 		if len(frontier) == 0 {
 			break
@@ -61,6 +70,9 @@ func (b *Builder) taxonomy(ctx context.Context, scope []EntityRef, taxonomic []s
 		}
 		next := map[string]EntityRef{}
 		for start := 0; start < len(frontier); start += taxonomyQueryChunkSize {
+			if err := checkBuildContext(ctx); err != nil {
+				return nil, err
+			}
 			end := start + taxonomyQueryChunkSize
 			if end > len(frontier) {
 				end = len(frontier)
@@ -70,6 +82,9 @@ func (b *Builder) taxonomy(ctx context.Context, scope []EntityRef, taxonomic []s
 				return nil, err
 			}
 			for _, edge := range edges {
+				if err := checkBuildContext(ctx); err != nil {
+					return nil, err
+				}
 				if refsOverlap(edge.child, edge.parent) {
 					continue
 				}
@@ -87,8 +102,14 @@ func (b *Builder) taxonomy(ctx context.Context, scope []EntityRef, taxonomic []s
 		}
 		frontier = sortedTaxonomyRefs(next)
 	}
-	levels, components := hierarchy.levels(cfg.MaxParentLevel)
-	out := hierarchy.rows(levels, components, cfg.MaxParentLevel)
+	levels, components, err := hierarchy.levels(ctx, cfg.MaxParentLevel)
+	if err != nil {
+		return nil, err
+	}
+	out, err := hierarchy.rows(ctx, levels, components, cfg.MaxParentLevel)
+	if err != nil {
+		return nil, err
+	}
 	sortTaxonomyRows(out)
 	return out, nil
 }
@@ -109,6 +130,9 @@ func (b *Builder) directTaxonomy(ctx context.Context, children []EntityRef, taxo
 	}
 	out := make([]taxonomyRow, 0, len(rows))
 	for _, row := range rows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		child := EntityRef{
 			ID:   firstString(row, "child_id", "source_id", "child_uuid", "source_uuid"),
 			Name: firstString(row, "child_name", "source_name"),
@@ -153,6 +177,9 @@ func (b *Builder) directRelations(ctx context.Context, scope []EntityRef, predic
 	}
 	out := make([]directRow, 0, len(rows))
 	for _, row := range rows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		source := EntityRef{
 			ID:   firstString(row, "source_id", "child_id", "source_uuid"),
 			Name: firstString(row, "source_name", "child_name"),
@@ -346,10 +373,16 @@ func (h *taxonomyHierarchy) scopeRefs() []EntityRef {
 	return sortedTaxonomyRefs(refs)
 }
 
-func (h *taxonomyHierarchy) levels(maxLevel int) (map[string]int, map[string]int) {
-	components := h.components()
+func (h *taxonomyHierarchy) levels(ctx context.Context, maxLevel int) (map[string]int, map[string]int, error) {
+	components, err := h.components(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	compParents := map[int]map[int]bool{}
 	for child, parents := range h.childParents {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		childComp, ok := components[child]
 		if !ok {
 			continue
@@ -373,6 +406,9 @@ func (h *taxonomyHierarchy) levels(maxLevel int) (map[string]int, map[string]int
 	compLevels := map[int]int{}
 	queue := []int{}
 	for key := range h.scopeKeys {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		if comp, ok := components[key]; ok {
 			if _, seen := compLevels[comp]; !seen {
 				compLevels[comp] = 0
@@ -381,6 +417,9 @@ func (h *taxonomyHierarchy) levels(maxLevel int) (map[string]int, map[string]int
 		}
 	}
 	for len(queue) > 0 {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		comp := queue[0]
 		queue = queue[1:]
 		level := compLevels[comp]
@@ -404,14 +443,17 @@ func (h *taxonomyHierarchy) levels(maxLevel int) (map[string]int, map[string]int
 
 	levels := map[string]int{}
 	for key, comp := range components {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		if level, ok := compLevels[comp]; ok {
 			levels[key] = level
 		}
 	}
-	return levels, components
+	return levels, components, nil
 }
 
-func (h *taxonomyHierarchy) components() map[string]int {
+func (h *taxonomyHierarchy) components(ctx context.Context) (map[string]int, error) {
 	index := 0
 	component := 0
 	stack := []string{}
@@ -420,9 +462,17 @@ func (h *taxonomyHierarchy) components() map[string]int {
 	onStack := map[string]bool{}
 	components := map[string]int{}
 	keys := sortedTaxonomyNodeKeys(h.nodes)
+	var ctxErr error
 
 	var strongConnect func(string)
 	strongConnect = func(node string) {
+		if ctxErr != nil {
+			return
+		}
+		if err := checkBuildContext(ctx); err != nil {
+			ctxErr = err
+			return
+		}
 		indexes[node] = index
 		lowlink[node] = index
 		index++
@@ -435,6 +485,9 @@ func (h *taxonomyHierarchy) components() map[string]int {
 			}
 			if _, seen := indexes[parent]; !seen {
 				strongConnect(parent)
+				if ctxErr != nil {
+					return
+				}
 				if lowlink[parent] < lowlink[node] {
 					lowlink[node] = lowlink[parent]
 				}
@@ -461,21 +514,36 @@ func (h *taxonomyHierarchy) components() map[string]int {
 	}
 
 	for _, key := range keys {
+		if ctxErr != nil {
+			return nil, ctxErr
+		}
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		if _, seen := indexes[key]; !seen {
 			strongConnect(key)
 		}
 	}
-	return components
+	if ctxErr != nil {
+		return nil, ctxErr
+	}
+	return components, nil
 }
 
-func (h *taxonomyHierarchy) rows(levels map[string]int, components map[string]int, maxLevel int) []taxonomyRow {
+func (h *taxonomyHierarchy) rows(ctx context.Context, levels map[string]int, components map[string]int, maxLevel int) ([]taxonomyRow, error) {
 	keys := make([]string, 0, len(h.edges))
 	for key := range h.edges {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	out := make([]taxonomyRow, 0, len(keys))
 	for _, key := range keys {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		edge := h.edges[key]
 		if components[edge.childKey] == components[edge.parentKey] {
 			continue
@@ -494,7 +562,7 @@ func (h *taxonomyHierarchy) rows(levels map[string]int, components map[string]in
 		row.depth = parentLevel
 		out = append(out, row)
 	}
-	return out
+	return out, nil
 }
 
 func unqueriedTaxonomyRefs(refs []EntityRef, queried map[string]bool) []EntityRef {

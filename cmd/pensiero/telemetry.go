@@ -97,6 +97,7 @@ type queryTelemetry struct {
 type telemetryReasoner struct {
 	inner     reasoning.Reasoner
 	telemetry *queryTelemetry
+	load      *LoadTracker
 }
 
 type queryProbe struct {
@@ -123,16 +124,23 @@ func newQueryTelemetry(limit int) *queryTelemetry {
 }
 
 func newTelemetryReasoner(inner reasoning.Reasoner, telemetry *queryTelemetry) reasoning.Reasoner {
-	if telemetry == nil {
+	return newTelemetryReasonerWithLoad(inner, telemetry, nil)
+}
+
+func newTelemetryReasonerWithLoad(inner reasoning.Reasoner, telemetry *queryTelemetry, load *LoadTracker) reasoning.Reasoner {
+	if telemetry == nil && load == nil {
 		return inner
 	}
 	return &telemetryReasoner{
 		inner:     inner,
 		telemetry: telemetry,
+		load:      load,
 	}
 }
 
 func (r *telemetryReasoner) Derive(ctx context.Context, req reasoning.DeriveRequest) ([]reasoning.Proof, error) {
+	endLoad := r.beginLoad()
+	defer endLoad()
 	start, deadlineMS := queryStart(ctx)
 	probe := &queryProbe{}
 	ctx = context.WithValue(ctx, queryProbeContextKey{}, probe)
@@ -157,6 +165,8 @@ func (r *telemetryReasoner) Derive(ctx context.Context, req reasoning.DeriveRequ
 }
 
 func (r *telemetryReasoner) Entails(ctx context.Context, claim reasoning.Claim) (reasoning.EntailResult, error) {
+	endLoad := r.beginLoad()
+	defer endLoad()
 	start, deadlineMS := queryStart(ctx)
 	probe := &queryProbe{}
 	ctx = context.WithValue(ctx, queryProbeContextKey{}, probe)
@@ -182,6 +192,8 @@ func (r *telemetryReasoner) Entails(ctx context.Context, claim reasoning.Claim) 
 }
 
 func (r *telemetryReasoner) Contradicts(ctx context.Context, claim reasoning.Claim) (bool, *reasoning.Proof, error) {
+	endLoad := r.beginLoad()
+	defer endLoad()
 	start, deadlineMS := queryStart(ctx)
 	probe := &queryProbe{}
 	ctx = context.WithValue(ctx, queryProbeContextKey{}, probe)
@@ -213,6 +225,13 @@ func (r *telemetryReasoner) Name() string {
 		return "telemetry"
 	}
 	return r.inner.Name()
+}
+
+func (r *telemetryReasoner) beginLoad() func() {
+	if r == nil || r.load == nil {
+		return func() {}
+	}
+	return r.load.Begin()
 }
 
 func (t *queryTelemetry) Record(event QueryEvent) {

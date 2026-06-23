@@ -37,6 +37,8 @@ type serveOptions struct {
 	ReasoningExt      string
 	GoldenFile        string
 	Interval          time.Duration
+	IGLQuiet          time.Duration
+	IGLMinPublish     time.Duration
 	MinSupport        int
 	MinParentSupport  int
 	MaxParentLevel    int
@@ -65,6 +67,8 @@ func runServe(args []string) error {
 	fs.StringVar(&opts.ScopesDir, "scopes-dir", opts.ScopesDir, "directory of JSON scope descriptors")
 	fs.StringVar(&opts.OutDir, "out-dir", opts.OutDir, "published graph directory")
 	fs.DurationVar(&opts.Interval, "interval", opts.Interval, "IGL period")
+	fs.DurationVar(&opts.IGLQuiet, "igl-quiet", opts.IGLQuiet, "minimum query-idle time before an IGL pass")
+	fs.DurationVar(&opts.IGLMinPublish, "igl-min-publish", opts.IGLMinPublish, "minimum interval between successful IGL publishes")
 	fs.IntVar(&opts.MinSupport, "min-support", opts.MinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
 	fs.IntVar(&opts.MaxParentLevel, "max-parent-level", opts.MaxParentLevel, "maximum parent depth to keep")
@@ -115,9 +119,10 @@ func runServe(args []string) error {
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	metrics := generalization.NewMetrics()
+	loadTracker := NewLoadTracker(LoadTrackerConfig{})
 	loop := &generalization.Loop{
 		Publisher: &generalization.Publisher{
-			Source:   source,
+			Source:   loadAwareSource{inner: source, load: loadTracker},
 			Registry: reg,
 			Writer:   ladybugSnapshotWriter{},
 			Validate: validateLadybugSnapshot,
@@ -151,13 +156,19 @@ func runServe(args []string) error {
 		}
 	}
 	if grpcEnabled {
-		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, reasoningTelemetry, readiness, logger)
+		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, reasoningTelemetry, loadTracker, readiness, logger)
 		if err != nil {
 			return err
 		}
 		defer grpcRuntime.Close(logger)
 	}
-	return loop.Run(ctx)
+	scheduler := NewIGLScheduler(loop, loadTracker, IGLSchedulerConfig{
+		BaseInterval:       opts.Interval,
+		QuietFor:           opts.IGLQuiet,
+		MinPublishInterval: opts.IGLMinPublish,
+		Logger:             logger,
+	})
+	return runLowPriorityIGLWorker(ctx, scheduler.Run)
 }
 
 func defaultServeOptions() serveOptions {
@@ -177,6 +188,8 @@ func defaultServeOptions() serveOptions {
 		ReasoningExt:      os.Getenv("PENSIERO_REASONING_EXTENSION"),
 		GoldenFile:        os.Getenv("PENSIERO_GOLDEN_FILE"),
 		Interval:          envDuration("PENSIERO_INTERVAL", time.Minute),
+		IGLQuiet:          envDuration("PENSIERO_IGL_QUIET", defaultIGLQuiet),
+		IGLMinPublish:     envDuration("PENSIERO_IGL_MIN_PUBLISH", defaultIGLMinPublish),
 		MinSupport:        envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
 		MinParentSupport:  envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
 		MaxParentLevel:    envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),

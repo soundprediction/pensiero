@@ -27,7 +27,7 @@ type grpcReasoningRuntime struct {
 	stopOnce  sync.Once
 }
 
-func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, telemetry *queryTelemetry, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
+func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, telemetry *queryTelemetry, load *LoadTracker, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
 	buildGeneration, err := generationBuilderForServe(opts, reg)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 	server := grpc.NewServer()
 	cfg := serveReasoningConfig()
 	cache := newProofCache(store, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
-	reasoner := newTelemetryReasoner(cache, telemetry)
+	reasoner := newTelemetryReasonerWithLoad(cache, telemetry, load)
 	grpcsvc.NewServer(reasoner).Register(server)
 	runtime := &grpcReasoningRuntime{
 		server:    server,

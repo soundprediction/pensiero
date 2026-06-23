@@ -26,11 +26,17 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 	if b.source == nil {
 		return nil, fmt.Errorf("generalization: nil source")
 	}
+	if err := checkBuildContext(ctx); err != nil {
+		return nil, err
+	}
 	if !b.cfg.TaxonomicDirection.valid() {
 		return nil, fmt.Errorf("generalization: invalid taxonomic direction %q", b.cfg.TaxonomicDirection)
 	}
 	scope, err := b.scopeEntities(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkBuildContext(ctx); err != nil {
 		return nil, err
 	}
 	if len(scope) == 0 {
@@ -52,7 +58,7 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	return assembleGraph(b.cfg, b.reg, scope, taxonomic, taxRows, directRows), nil
+	return assembleGraph(ctx, b.cfg, b.reg, scope, taxonomic, taxRows, directRows)
 }
 
 func (c Config) withDefaults() Config {
@@ -93,14 +99,20 @@ func InheritablePredicates(reg *reasoning.PredicateRegistry, taxonomic []string)
 	return sortedKeys(out)
 }
 
-func assembleGraph(cfg Config, reg *reasoning.PredicateRegistry, scope []EntityRef, taxonomic []string, taxRows []taxonomyRow, directRows []directRow) *Graph {
+func assembleGraph(ctx context.Context, cfg Config, reg *reasoning.PredicateRegistry, scope []EntityRef, taxonomic []string, taxRows []taxonomyRow, directRows []directRow) (*Graph, error) {
 	cfg = cfg.withDefaults()
 	scopeKeys := map[string]bool{}
 	for _, ref := range scope {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		addRefKeys(scopeKeys, ref)
 	}
 
-	parents, childParents := selectParents(cfg, taxRows)
+	parents, childParents, err := selectParents(ctx, cfg, taxRows)
+	if err != nil {
+		return nil, err
+	}
 	g := &graphAssembler{
 		graph: Graph{
 			Scope: cfg.Scope,
@@ -110,13 +122,22 @@ func assembleGraph(cfg Config, reg *reasoning.PredicateRegistry, scope []EntityR
 		relations: map[string]bool{},
 	}
 	for _, ref := range scope {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		g.addNode(ref, NodeScope, 0, 1)
 	}
 	for _, p := range parents {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		g.addNode(p.ref, NodeConcept, p.depth, len(p.children))
 		g.graph.Stats.ParentLevelCounts[p.depth]++
 	}
 	for _, row := range taxRows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		parentKey := refKey(row.parent)
 		if _, ok := parents[parentKey]; !ok {
 			continue
@@ -147,6 +168,9 @@ func assembleGraph(cfg Config, reg *reasoning.PredicateRegistry, scope []EntityR
 
 	directByChild := map[string][]directRow{}
 	for _, row := range directRows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		sourceKey := refKey(row.source)
 		if !matchesRef(scopeKeys, row.source) {
 			continue
@@ -173,14 +197,22 @@ func assembleGraph(cfg Config, reg *reasoning.PredicateRegistry, scope []EntityR
 		})
 	}
 
-	lifted := liftRelations(cfg, parents, childParents, directByChild)
+	lifted, err := liftRelations(ctx, cfg, parents, childParents, directByChild)
+	if err != nil {
+		return nil, err
+	}
 	for _, rel := range lifted {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		g.addNode(EntityRef{ID: rel.TargetID, Name: rel.TargetName}, NodeEndpoint, 0, 0)
 		g.addRelation(rel)
 	}
 
-	g.finish()
-	return &g.graph
+	if err := g.finish(ctx); err != nil {
+		return nil, err
+	}
+	return &g.graph, nil
 }
 
 type parentState struct {
@@ -189,12 +221,15 @@ type parentState struct {
 	depth    int
 }
 
-func selectParents(cfg Config, rows []taxonomyRow) (map[string]*parentState, map[string][]string) {
+func selectParents(ctx context.Context, cfg Config, rows []taxonomyRow) (map[string]*parentState, map[string][]string, error) {
 	cfg = cfg.withDefaults()
 	parents := map[string]*parentState{}
 	childParents := map[string][]string{}
 	childrenByParent := map[string][]string{}
 	for _, row := range rows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		childKey := refKey(row.child)
 		parentKey := refKey(row.parent)
 		if childKey == "" || parentKey == "" || childKey == parentKey {
@@ -218,12 +253,18 @@ func selectParents(cfg Config, rows []taxonomyRow) (map[string]*parentState, map
 	kept := map[string]bool{}
 	queue := []string{}
 	for key, state := range parents {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		if len(state.children) >= cfg.MinParentSupport {
 			kept[key] = true
 			queue = append(queue, key)
 		}
 	}
 	for len(queue) > 0 {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		parent := queue[0]
 		queue = queue[1:]
 		for _, child := range childrenByParent[parent] {
@@ -236,11 +277,17 @@ func selectParents(cfg Config, rows []taxonomyRow) (map[string]*parentState, map
 	}
 
 	for key := range parents {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		if !kept[key] {
 			delete(parents, key)
 		}
 	}
 	for key, state := range parents {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, nil, err
+		}
 		for child := range state.children {
 			childParents[child] = append(childParents[child], key)
 		}
@@ -248,7 +295,7 @@ func selectParents(cfg Config, rows []taxonomyRow) (map[string]*parentState, map
 	for child := range childParents {
 		sort.Strings(childParents[child])
 	}
-	return parents, childParents
+	return parents, childParents, nil
 }
 
 type liftBucket struct {
@@ -268,11 +315,17 @@ type liftInput struct {
 	confidence float64
 }
 
-func liftRelations(cfg Config, parents map[string]*parentState, childParents map[string][]string, directByChild map[string][]directRow) []Relation {
+func liftRelations(ctx context.Context, cfg Config, parents map[string]*parentState, childParents map[string][]string, directByChild map[string][]directRow) ([]Relation, error) {
 	cfg = cfg.withDefaults()
 	current := map[string][]liftInput{}
 	for childKey, rows := range directByChild {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		for _, row := range rows {
+			if err := checkBuildContext(ctx); err != nil {
+				return nil, err
+			}
 			current[childKey] = append(current[childKey], liftInput{
 				target:     row.target,
 				sources:    compactStrings([]string{row.id}),
@@ -285,14 +338,23 @@ func liftRelations(cfg Config, parents map[string]*parentState, childParents map
 	out := []Relation{}
 	emitted := map[string]bool{}
 	for level := 1; level <= cfg.MaxParentLevel && len(current) > 0; level++ {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
 		buckets := map[string]*liftBucket{}
 		for childKey, rows := range current {
+			if err := checkBuildContext(ctx); err != nil {
+				return nil, err
+			}
 			for _, parentKey := range childParents[childKey] {
 				parent := parents[parentKey]
 				if parent == nil {
 					continue
 				}
 				for _, row := range rows {
+					if err := checkBuildContext(ctx); err != nil {
+						return nil, err
+					}
 					key := strings.Join([]string{parentKey, row.predicate, refKey(row.target)}, "\x00")
 					b := buckets[key]
 					if b == nil {
@@ -317,10 +379,16 @@ func liftRelations(cfg Config, parents map[string]*parentState, childParents map
 		next := map[string][]liftInput{}
 		keys := make([]string, 0, len(buckets))
 		for key := range buckets {
+			if err := checkBuildContext(ctx); err != nil {
+				return nil, err
+			}
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
+			if err := checkBuildContext(ctx); err != nil {
+				return nil, err
+			}
 			b := buckets[key]
 			support := len(b.children)
 			coverage := 1.0
@@ -363,7 +431,7 @@ func liftRelations(cfg Config, parents map[string]*parentState, childParents map
 		current = next
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
+	return out, nil
 }
 
 type graphAssembler struct {
@@ -413,9 +481,12 @@ func (g *graphAssembler) addRelation(rel Relation) {
 	}
 }
 
-func (g *graphAssembler) finish() {
+func (g *graphAssembler) finish(ctx context.Context) error {
 	g.graph.Nodes = make([]Node, 0, len(g.nodes))
 	for _, n := range g.nodes {
+		if err := checkBuildContext(ctx); err != nil {
+			return err
+		}
 		g.graph.Nodes = append(g.graph.Nodes, *n)
 		switch n.Kind {
 		case NodeScope:
@@ -430,6 +501,14 @@ func (g *graphAssembler) finish() {
 	sort.Slice(g.graph.Relations, func(i, j int) bool { return g.graph.Relations[i].ID < g.graph.Relations[j].ID })
 	g.graph.Stats.NodeCount = len(g.graph.Nodes)
 	g.graph.Stats.RelationCount = len(g.graph.Relations)
+	return nil
+}
+
+func checkBuildContext(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
 func nodeRank(kind NodeKind) int {

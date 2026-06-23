@@ -74,6 +74,9 @@ type Loop struct {
 }
 
 func (p *Publisher) Publish(ctx context.Context, outDir string, scope Scope, previous *Stats) (ScopeResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	start := time.Now()
 	name, cfg, err := normalizeScope(scope)
 	result := ScopeResult{StartedAt: start, Scope: name}
@@ -103,10 +106,16 @@ func (p *Publisher) Publish(ctx context.Context, outDir string, scope Scope, pre
 	if err != nil {
 		return finishScopeResult(result, err), err
 	}
+	if err := ctx.Err(); err != nil {
+		return finishScopeResult(result, err), err
+	}
 	result.Stats = copyStats(graph.Stats)
 	result.Delta = diffStats(graph.Stats, previous)
 
 	tmpPath := p.tempPath(path)
+	if err := ctx.Err(); err != nil {
+		return finishScopeResult(result, err), err
+	}
 	if err := os.RemoveAll(tmpPath); err != nil {
 		err = fmt.Errorf("generalization IGL: clear temp path: %w", err)
 		return finishScopeResult(result, err), err
@@ -121,12 +130,18 @@ func (p *Publisher) Publish(ctx context.Context, outDir string, scope Scope, pre
 	if err := p.Writer.Write(ctx, tmpPath, name, graph); err != nil {
 		return finishScopeResult(result, err), err
 	}
+	if err := ctx.Err(); err != nil {
+		return finishScopeResult(result, err), err
+	}
 	if p.Validate != nil {
 		if err := p.Validate(ctx, tmpPath, graph); err != nil {
 			return finishScopeResult(result, err), err
 		}
 	}
-	if err := publishSnapshot(tmpPath, path); err != nil {
+	if err := ctx.Err(); err != nil {
+		return finishScopeResult(result, err), err
+	}
+	if err := publishSnapshot(ctx, tmpPath, path); err != nil {
 		return finishScopeResult(result, err), err
 	}
 	published = true
@@ -302,12 +317,18 @@ func finishPassResult(result PassResult, err error) PassResult {
 	return result
 }
 
-func publishSnapshot(tmpPath string, finalPath string) error {
+func publishSnapshot(ctx context.Context, tmpPath string, finalPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := os.Stat(tmpPath)
 	if err != nil {
 		return fmt.Errorf("generalization IGL: stat temp snapshot: %w", err)
 	}
 	if !info.IsDir() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.Rename(tmpPath, finalPath); err != nil {
 			return fmt.Errorf("generalization IGL: publish snapshot: %w", err)
 		}
@@ -317,6 +338,9 @@ func publishSnapshot(tmpPath string, finalPath string) error {
 	versionPath := strings.Replace(tmpPath, ".tmp.", ".snap.", 1)
 	if versionPath == tmpPath {
 		versionPath = tmpPath + ".snap"
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := os.Rename(tmpPath, versionPath); err != nil {
 		return fmt.Errorf("generalization IGL: stage snapshot: %w", err)
@@ -330,6 +354,9 @@ func publishSnapshot(tmpPath string, finalPath string) error {
 
 	linkPath := tmpPath + ".link"
 	_ = os.Remove(linkPath)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.Symlink(filepath.Base(versionPath), linkPath); err != nil {
 		return fmt.Errorf("generalization IGL: create snapshot link: %w", err)
 	}
@@ -338,6 +365,9 @@ func publishSnapshot(tmpPath string, finalPath string) error {
 			_ = os.Remove(linkPath)
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.Rename(linkPath, finalPath); err != nil {
 		return fmt.Errorf("generalization IGL: publish snapshot link: %w", err)
 	}
