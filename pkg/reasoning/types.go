@@ -51,6 +51,7 @@ type Proof struct {
 type DeriveRequest struct {
 	Source         string
 	Target         string   // empty => any reachable target
+	Predicate      string   // optional canonical target predicate: keep proofs whose effective predicate entails it
 	Preds          []string // optional: restrict intermediate predicates (canonical)
 	MaxHops        int      // logical hops (physical depth is 2x in the reified model)
 	Decay          float64  // per-hop confidence decay (0,1]

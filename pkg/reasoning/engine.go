@@ -42,6 +42,10 @@ func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error)
 		return nil, fmt.Errorf("reasoning.Derive: %w", err)
 	}
 	proofs := make([]Proof, 0, len(rows))
+	targetPred := ""
+	if req.Predicate != "" {
+		targetPred = canonicalPredicate(e.reg, req.Predicate)
+	}
 	for _, row := range rows {
 		p, ok := e.rowToProof(req.Source, row, req.IncludeInverse)
 		if !ok || p.Confidence < req.MinConf {
@@ -49,6 +53,13 @@ func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error)
 		}
 		if req.Target != "" && !sameEntity(p.Target, req.Target) {
 			continue
+		}
+		if targetPred != "" {
+			effective, ok := effectivePredicate(e.reg, p.Steps)
+			if !ok || !proofEntailsPredicate(e.reg, effective, targetPred, req.IncludeInverse) {
+				continue
+			}
+			p.Predicate = effective
 		}
 		proofs = append(proofs, p)
 	}
@@ -75,7 +86,7 @@ func (e *Engine) Entails(ctx context.Context, c Claim) (EntailResult, error) {
 	}
 
 	proofs, err := e.Derive(ctx, DeriveRequest{
-		Source: c.Subject, Target: c.Object, IncludeInverse: true,
+		Source: c.Subject, Target: c.Object, Predicate: canonicalPredicate(e.reg, c.Predicate), IncludeInverse: true,
 	})
 	if err != nil {
 		return EntailResult{}, err
@@ -190,10 +201,7 @@ func (e *Engine) rowToProof(source string, row map[string]any, includeInverse bo
 	if hops > 1 {
 		conf *= math.Pow(e.cfg.Decay, float64(hops-1))
 	}
-	pred := ""
-	if len(steps) > 0 {
-		pred = steps[len(steps)-1].Predicate
-	}
+	pred, _ := effectivePredicate(e.reg, steps)
 	return Proof{
 		Source:     source,
 		Target:     target,
