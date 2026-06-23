@@ -73,6 +73,13 @@ func Packs() []string {
 // each named pack, then any operator-provided extras. Extras may override earlier
 // predicates; registered pack collisions are treated as shipped-data errors.
 func BuildRegistry(names []string, extra ...PredicatePack) (*PredicateRegistry, error) {
+	return BuildRegistryWithTypes(names, emptyTypeRegistry(), extra...)
+}
+
+// BuildRegistryWithTypes builds a predicate registry and validates advisory
+// domain/range declarations against an explicit type registry. Unknown types are
+// returned as registry warnings, not as hard build errors.
+func BuildRegistryWithTypes(names []string, types *TypeRegistry, extra ...PredicatePack) (*PredicateRegistry, error) {
 	general, ok := lookupPack("general")
 	if !ok {
 		return nil, fmt.Errorf("predicate pack %q is not registered", "general")
@@ -120,8 +127,9 @@ func BuildRegistry(names []string, extra ...PredicatePack) (*PredicateRegistry, 
 	if err := merged.validate(); err != nil {
 		return nil, err
 	}
+	warnings := append(types.Warnings(), merged.domainRangeWarnings(types)...)
 
-	return NewPredicateRegistry(merged.metas(), merged.compositions(), merged.disjointPairs()), nil
+	return newPredicateRegistry(merged.metas(), merged.compositions(), merged.disjointPairs(), warnings, types), nil
 }
 
 type packMerge struct {
@@ -288,6 +296,34 @@ func (m *packMerge) validateRef(offender, field, ref string) error {
 	return fmt.Errorf("%s %s references undeclared canonical predicate %q", offender, field, ref)
 }
 
+func (m *packMerge) domainRangeWarnings(types *TypeRegistry) []string {
+	if types == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(m.preds))
+	for key := range m.preds {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var warnings []string
+	for _, key := range keys {
+		meta := m.preds[key]
+		source := m.predSources[key]
+		for _, typ := range meta.Domain {
+			if _, ok := types.Get(typ); !ok {
+				warnings = append(warnings, fmt.Sprintf("predicate pack %q predicate %q domain type %q is undeclared", source.layer, meta.Canonical, typ))
+			}
+		}
+		for _, typ := range meta.Range {
+			if _, ok := types.Get(typ); !ok {
+				warnings = append(warnings, fmt.Sprintf("predicate pack %q predicate %q range type %q is undeclared", source.layer, meta.Canonical, typ))
+			}
+		}
+	}
+	return warnings
+}
+
 func (m *packMerge) metas() []PredicateMeta {
 	keys := make([]string, 0, len(m.preds))
 	for key := range m.preds {
@@ -348,13 +384,15 @@ func normalizePredicateMeta(meta PredicateMeta) PredicateMeta {
 		meta.Raw = meta.Canonical
 	}
 	meta.SubPropertyOf = trimmedStrings(meta.SubPropertyOf)
+	meta.Domain = trimmedStrings(meta.Domain)
+	meta.Range = trimmedStrings(meta.Range)
 	return meta
 }
 
 func copyPredicatePack(p PredicatePack) PredicatePack {
 	cp := PredicatePack{
 		Name:         strings.TrimSpace(p.Name),
-		Predicates:   append([]PredicateMeta{}, p.Predicates...),
+		Predicates:   copyPredicateMetas(p.Predicates),
 		Compositions: append([]CompositionRule{}, p.Compositions...),
 		Disjoints:    append([]DisjointPair{}, p.Disjoints...),
 	}
@@ -365,6 +403,20 @@ func copyPredicatePack(p PredicatePack) PredicatePack {
 		}
 	}
 	return cp
+}
+
+func copyPredicateMetas(values []PredicateMeta) []PredicateMeta {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]PredicateMeta, len(values))
+	for i, value := range values {
+		out[i] = value
+		out[i].SubPropertyOf = append([]string{}, value.SubPropertyOf...)
+		out[i].Domain = append([]string{}, value.Domain...)
+		out[i].Range = append([]string{}, value.Range...)
+	}
+	return out
 }
 
 func trimmedStrings(values []string) []string {

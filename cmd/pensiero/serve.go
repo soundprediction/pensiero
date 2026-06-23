@@ -28,6 +28,7 @@ type serveOptions struct {
 	OutDir            string
 	PredicateCSV      string
 	PredicatePacksCSV string
+	TypePacksCSV      string
 	TaxonomicCSV      string
 	TaxonomicDir      string
 	RegistrySpec      string
@@ -43,6 +44,7 @@ type serveOptions struct {
 	MinParentSupport  int
 	MaxParentLevel    int
 	GRPCPoolSize      int
+	InventorySample   int
 	Once              bool
 }
 
@@ -74,12 +76,14 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.MaxParentLevel, "max-parent-level", opts.MaxParentLevel, "maximum parent depth to keep")
 	fs.StringVar(&opts.PredicateCSV, "predicates", opts.PredicateCSV, "comma-separated predicates; empty uses registry-derived predicates")
 	fs.StringVar(&opts.PredicatePacksCSV, "predicate-packs", opts.PredicatePacksCSV, "comma-separated predicate packs to extend the general registry")
+	fs.StringVar(&opts.TypePacksCSV, "type-packs", opts.TypePacksCSV, "comma-separated entity type packs for advisory registry validation")
 	fs.StringVar(&opts.TaxonomicCSV, "taxonomic-predicates", opts.TaxonomicCSV, "comma-separated hierarchy predicates")
 	fs.StringVar(&opts.TaxonomicDir, "taxonomic-direction", opts.TaxonomicDir, "hierarchy edge direction: child-to-parent or parent-to-child")
 	fs.StringVar(&opts.RegistrySpec, "registry", opts.RegistrySpec, "general or path to a registry JSON file")
 	fs.StringVar(&opts.HealthAddr, "health-addr", opts.HealthAddr, "health/metrics listen address; empty disables HTTP")
 	fs.StringVar(&opts.GRPCAddr, "grpc-addr", opts.GRPCAddr, "gRPC reasoning listen address; empty disables gRPC")
 	fs.IntVar(&opts.GRPCPoolSize, "grpc-pool-size", opts.GRPCPoolSize, "read-only graph handles for gRPC reasoning")
+	fs.IntVar(&opts.InventorySample, "inventory-sample", opts.InventorySample, "sampled predicate inventory row limit; 0 disables inventory")
 	fs.StringVar(&opts.Backend, "backend", opts.Backend, "gRPC reasoning backend: ladybug-native or symbolic-graph")
 	fs.StringVar(&opts.ReasoningExt, "reasoning-extension", opts.ReasoningExt, "reasoning extension path/name; empty loads reasoning by name")
 	fs.StringVar(&opts.GoldenFile, "golden-file", opts.GoldenFile, "optional JSON golden claims for validating gRPC snapshot reloads")
@@ -107,7 +111,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	reg, err := loadRegistry(opts.RegistrySpec, splitCSV(opts.PredicatePacksCSV)...)
+	reg, _, err := loadRegistryWithTypePacks(opts.RegistrySpec, splitCSV(opts.PredicatePacksCSV), splitCSV(opts.TypePacksCSV))
 	if err != nil {
 		return err
 	}
@@ -120,6 +124,13 @@ func runServe(args []string) error {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	metrics := generalization.NewMetrics()
 	loadTracker := NewLoadTracker(LoadTrackerConfig{})
+	inventory := newPredicateInventory(source, reg, PredicateInventoryConfig{
+		SampleLimit:     opts.InventorySample,
+		RefreshInterval: defaultPredicateInventoryInterval,
+		QuietFor:        opts.IGLQuiet,
+		Load:            loadTracker,
+		Logger:          logger,
+	})
 	loop := &generalization.Loop{
 		Publisher: &generalization.Publisher{
 			Source:   loadAwareSource{inner: source, load: loadTracker},
@@ -151,7 +162,7 @@ func runServe(args []string) error {
 		readiness.MarkReady()
 	}
 	if strings.TrimSpace(opts.HealthAddr) != "" {
-		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, reasoningTelemetry, readiness, logger); err != nil {
+		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, reasoningTelemetry, readiness, inventory, logger); err != nil {
 			return err
 		}
 	}
@@ -162,6 +173,7 @@ func runServe(args []string) error {
 		}
 		defer grpcRuntime.Close(logger)
 	}
+	inventory.Start(ctx)
 	scheduler := NewIGLScheduler(loop, loadTracker, IGLSchedulerConfig{
 		BaseInterval:       opts.Interval,
 		QuietFor:           opts.IGLQuiet,
@@ -179,6 +191,7 @@ func defaultServeOptions() serveOptions {
 		OutDir:            os.Getenv("PENSIERO_OUT_DIR"),
 		PredicateCSV:      os.Getenv("PENSIERO_PREDICATES"),
 		PredicatePacksCSV: os.Getenv("PENSIERO_PREDICATE_PACKS"),
+		TypePacksCSV:      os.Getenv("PENSIERO_TYPE_PACKS"),
 		TaxonomicCSV:      os.Getenv("PENSIERO_TAXONOMIC_PREDICATES"),
 		TaxonomicDir:      firstEnv("PENSIERO_TAXONOMIC_DIRECTION", string(generalization.TaxonomicDirectionChildToParent)),
 		RegistrySpec:      firstEnv("PENSIERO_REGISTRY", "general"),
@@ -194,6 +207,7 @@ func defaultServeOptions() serveOptions {
 		MinParentSupport:  envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
 		MaxParentLevel:    envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),
 		GRPCPoolSize:      envInt("PENSIERO_GRPC_POOL_SIZE", defaultGRPCPoolSize),
+		InventorySample:   envInt("PENSIERO_INVENTORY_SAMPLE", defaultPredicateInventorySample),
 	}
 }
 
@@ -360,7 +374,32 @@ func scopeFromDescriptor(dir string, fileName string, desc scopeDescriptor, base
 	return generalization.Scope{Name: name, Config: cfg}, nil
 }
 
-func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, logger *log.Logger) (*http.Server, error) {
+func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, logger *log.Logger) (*http.Server, error) {
+	mux := healthHandler(metrics, reasoningTelemetry, readiness, inventory)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("health listen: %w", err)
+	}
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		logger.Printf("health addr=%s", listener.Addr().String())
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			logger.Printf("health error=%v", err)
+		}
+	}()
+	return server, nil
+}
+
+func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		snapshot := metrics.Snapshot()
@@ -401,27 +440,14 @@ func startHealthServer(ctx context.Context, addr string, metrics *generalization
 		}
 		writeJSON(w, http.StatusOK, payload)
 	})
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("health listen: %w", err)
-	}
-	server := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
-	go func() {
-		logger.Printf("health addr=%s", listener.Addr().String())
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			logger.Printf("health error=%v", err)
+	mux.HandleFunc("/inventory", func(w http.ResponseWriter, r *http.Request) {
+		if inventory == nil {
+			writeJSON(w, http.StatusOK, PredicateInventorySnapshot{})
+			return
 		}
-	}()
-	return server, nil
+		writeJSON(w, http.StatusOK, inventory.Snapshot())
+	})
+	return mux
 }
 
 func writeJSON(w http.ResponseWriter, code int, value any) {
