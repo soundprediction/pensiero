@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 
@@ -10,6 +9,7 @@ import (
 )
 
 type registryFile struct {
+	Extends      []string                    `json:"extends"`
 	Aliases      map[string]string           `json:"aliases"`
 	Predicates   []registryPredicate         `json:"predicates"`
 	Compositions []reasoning.CompositionRule `json:"compositions"`
@@ -25,10 +25,10 @@ type registryPredicate struct {
 	Chars           reasoning.Characteristic `json:"chars"`
 }
 
-func loadRegistry(spec string) (*reasoning.PredicateRegistry, error) {
+func loadRegistry(spec string, packs ...string) (*reasoning.PredicateRegistry, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" || spec == "general" {
-		return reasoning.DefaultGeneralRegistry(), nil
+		return reasoning.BuildRegistry(packs)
 	}
 	data, err := os.ReadFile(spec)
 	if err != nil {
@@ -38,8 +38,7 @@ func loadRegistry(spec string) (*reasoning.PredicateRegistry, error) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, err
 	}
-	metas := make([]reasoning.PredicateMeta, 0, len(file.Predicates)+len(file.Aliases))
-	base := map[string]reasoning.PredicateMeta{}
+	metas := make([]reasoning.PredicateMeta, 0, len(file.Predicates))
 	for _, pred := range file.Predicates {
 		meta := reasoning.PredicateMeta{
 			Raw:           pred.Raw,
@@ -55,17 +54,16 @@ func loadRegistry(spec string) (*reasoning.PredicateRegistry, error) {
 			meta.Raw = meta.Canonical
 		}
 		metas = append(metas, meta)
-		base[strings.ToLower(strings.TrimSpace(meta.Canonical))] = meta
 	}
-	for raw, canon := range file.Aliases {
-		meta, ok := base[strings.ToLower(strings.TrimSpace(canon))]
-		if !ok {
-			return nil, fmt.Errorf("registry alias %q references unknown canonical %q", raw, canon)
-		}
-		meta.Raw = raw
-		metas = append(metas, meta)
-	}
-	return reasoning.NewPredicateRegistry(metas, file.Compositions, file.Disjoint), nil
+	extends := append([]string{}, file.Extends...)
+	extends = append(extends, packs...)
+	return reasoning.BuildRegistry(extends, reasoning.PredicatePack{
+		Name:         spec,
+		Predicates:   metas,
+		Compositions: file.Compositions,
+		Disjoints:    file.Disjoint,
+		Aliases:      file.Aliases,
+	})
 }
 
 func parseCharacteristics(values []string) reasoning.Characteristic {

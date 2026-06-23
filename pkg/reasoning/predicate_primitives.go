@@ -35,6 +35,8 @@ var medicalPredicates = []PredicateMeta{
 	// therapeutic / pharmacologic / diagnostic
 	{Canonical: "treats", InverseOf: "treated_by"},
 	{Canonical: "treated_by", InverseOf: "treats"},
+	{Canonical: "prevents", InverseOf: "prevented_by", SubPropertyOf: []string{"associated_with"}},
+	{Canonical: "prevented_by", InverseOf: "prevents", SubPropertyOf: []string{"associated_with"}},
 	{Canonical: "contraindicated_for", InverseOf: "has_contraindication"},
 	{Canonical: "has_contraindication", InverseOf: "contraindicated_for"},
 	{Canonical: "interacts_with", Chars: Symmetric},
@@ -83,22 +85,26 @@ var medicalAliases = map[string]string{
 // logical contradiction (e.g. a drug both treating and contraindicated for a
 // condition, or both causing and preventing it). Drives REASON_CONTRADICTS.
 var medicalDisjoint = []DisjointPair{
-	{A: "treats", B: "contraindicated"},
-	{A: "indicated", B: "contraindicated"},
+	{A: "treats", B: "contraindicated_for"},
 	{A: "prevents", B: "causes"},
 }
 
+func init() {
+	RegisterPack(PredicatePack{
+		Name:         "medical",
+		Predicates:   medicalPredicates,
+		Compositions: medicalCompositions,
+		Disjoints:    medicalDisjoint,
+		Aliases:      medicalAliases,
+	})
+}
+
 func DefaultMedicalRegistry() *PredicateRegistry {
-	preds := append(append([]PredicateMeta{}, generalPredicates...), medicalPredicates...)
-	comps := append(append([]CompositionRule{}, generalCompositions...), medicalCompositions...)
-	aliases := map[string]string{}
-	for k, v := range generalAliases {
-		aliases[k] = v
+	reg, err := BuildRegistry([]string{"medical"})
+	if err != nil {
+		panic(err)
 	}
-	for k, v := range medicalAliases {
-		aliases[k] = v
-	}
-	return buildRegistry(preds, aliases, comps, medicalDisjoint)
+	return reg
 }
 
 // TransitivePrimitives is the default taxonomic-closure predicate set.

@@ -22,24 +22,25 @@ import (
 )
 
 type serveOptions struct {
-	SourcePath       string
-	ScopesCSV        string
-	ScopesDir        string
-	OutDir           string
-	PredicateCSV     string
-	TaxonomicCSV     string
-	TaxonomicDir     string
-	RegistrySpec     string
-	HealthAddr       string
-	GRPCAddr         string
-	Backend          string
-	ReasoningExt     string
-	Interval         time.Duration
-	MinSupport       int
-	MinParentSupport int
-	MaxParentLevel   int
-	GRPCPoolSize     int
-	Once             bool
+	SourcePath        string
+	ScopesCSV         string
+	ScopesDir         string
+	OutDir            string
+	PredicateCSV      string
+	PredicatePacksCSV string
+	TaxonomicCSV      string
+	TaxonomicDir      string
+	RegistrySpec      string
+	HealthAddr        string
+	GRPCAddr          string
+	Backend           string
+	ReasoningExt      string
+	Interval          time.Duration
+	MinSupport        int
+	MinParentSupport  int
+	MaxParentLevel    int
+	GRPCPoolSize      int
+	Once              bool
 }
 
 type scopeDescriptor struct {
@@ -67,6 +68,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
 	fs.IntVar(&opts.MaxParentLevel, "max-parent-level", opts.MaxParentLevel, "maximum parent depth to keep")
 	fs.StringVar(&opts.PredicateCSV, "predicates", opts.PredicateCSV, "comma-separated predicates; empty uses registry-derived predicates")
+	fs.StringVar(&opts.PredicatePacksCSV, "predicate-packs", opts.PredicatePacksCSV, "comma-separated predicate packs to extend the general registry")
 	fs.StringVar(&opts.TaxonomicCSV, "taxonomic-predicates", opts.TaxonomicCSV, "comma-separated hierarchy predicates")
 	fs.StringVar(&opts.TaxonomicDir, "taxonomic-direction", opts.TaxonomicDir, "hierarchy edge direction: child-to-parent or parent-to-child")
 	fs.StringVar(&opts.RegistrySpec, "registry", opts.RegistrySpec, "general or path to a registry JSON file")
@@ -99,7 +101,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	reg, err := loadRegistry(opts.RegistrySpec)
+	reg, err := loadRegistry(opts.RegistrySpec, splitCSV(opts.PredicatePacksCSV)...)
 	if err != nil {
 		return err
 	}
@@ -154,23 +156,24 @@ func runServe(args []string) error {
 
 func defaultServeOptions() serveOptions {
 	return serveOptions{
-		SourcePath:       os.Getenv("PENSIERO_SOURCE"),
-		ScopesCSV:        os.Getenv("PENSIERO_SCOPES"),
-		ScopesDir:        os.Getenv("PENSIERO_SCOPES_DIR"),
-		OutDir:           os.Getenv("PENSIERO_OUT_DIR"),
-		PredicateCSV:     os.Getenv("PENSIERO_PREDICATES"),
-		TaxonomicCSV:     os.Getenv("PENSIERO_TAXONOMIC_PREDICATES"),
-		TaxonomicDir:     firstEnv("PENSIERO_TAXONOMIC_DIRECTION", string(generalization.TaxonomicDirectionChildToParent)),
-		RegistrySpec:     firstEnv("PENSIERO_REGISTRY", "general"),
-		HealthAddr:       firstEnv("PENSIERO_HEALTH_ADDR", "127.0.0.1:8080"),
-		GRPCAddr:         os.Getenv("PENSIERO_GRPC_ADDR"),
-		Backend:          reasoning.NativeBackendName,
-		ReasoningExt:     os.Getenv("PENSIERO_REASONING_EXTENSION"),
-		Interval:         envDuration("PENSIERO_INTERVAL", time.Minute),
-		MinSupport:       envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
-		MinParentSupport: envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
-		MaxParentLevel:   envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),
-		GRPCPoolSize:     envInt("PENSIERO_GRPC_POOL_SIZE", defaultGRPCPoolSize),
+		SourcePath:        os.Getenv("PENSIERO_SOURCE"),
+		ScopesCSV:         os.Getenv("PENSIERO_SCOPES"),
+		ScopesDir:         os.Getenv("PENSIERO_SCOPES_DIR"),
+		OutDir:            os.Getenv("PENSIERO_OUT_DIR"),
+		PredicateCSV:      os.Getenv("PENSIERO_PREDICATES"),
+		PredicatePacksCSV: os.Getenv("PENSIERO_PREDICATE_PACKS"),
+		TaxonomicCSV:      os.Getenv("PENSIERO_TAXONOMIC_PREDICATES"),
+		TaxonomicDir:      firstEnv("PENSIERO_TAXONOMIC_DIRECTION", string(generalization.TaxonomicDirectionChildToParent)),
+		RegistrySpec:      firstEnv("PENSIERO_REGISTRY", "general"),
+		HealthAddr:        firstEnv("PENSIERO_HEALTH_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:          os.Getenv("PENSIERO_GRPC_ADDR"),
+		Backend:           reasoning.NativeBackendName,
+		ReasoningExt:      os.Getenv("PENSIERO_REASONING_EXTENSION"),
+		Interval:          envDuration("PENSIERO_INTERVAL", time.Minute),
+		MinSupport:        envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
+		MinParentSupport:  envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
+		MaxParentLevel:    envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),
+		GRPCPoolSize:      envInt("PENSIERO_GRPC_POOL_SIZE", defaultGRPCPoolSize),
 	}
 }
 
