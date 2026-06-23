@@ -16,6 +16,8 @@ type readinessGate struct {
 	ready atomic.Bool
 }
 
+type graphHandleInitializer func(context.Context, graphHandle) error
+
 func newReadinessGate() *readinessGate {
 	return &readinessGate{}
 }
@@ -47,7 +49,7 @@ type pooledGraphQuerier struct {
 	closed    bool
 }
 
-func newPooledGraphQuerier(path string, size int) (*pooledGraphQuerier, error) {
+func newPooledGraphQuerier(path string, size int, init graphHandleInitializer) (*pooledGraphQuerier, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("pool size must be positive")
 	}
@@ -64,6 +66,13 @@ func newPooledGraphQuerier(path string, size int) (*pooledGraphQuerier, error) {
 		if err != nil {
 			_ = pool.Close()
 			return nil, fmt.Errorf("open read-only handle %d/%d: %w", i+1, size, err)
+		}
+		if init != nil {
+			if err := init(context.Background(), handle); err != nil {
+				_ = handle.Close()
+				_ = pool.Close()
+				return nil, fmt.Errorf("initialize read-only handle %d/%d: %w", i+1, size, err)
+			}
 		}
 		pool.handles = append(pool.handles, handle)
 		pool.available <- handle

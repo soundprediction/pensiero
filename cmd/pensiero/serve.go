@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/soundprediction/pensiero/pkg/generalization"
+	"github.com/soundprediction/pensiero/pkg/reasoning"
 )
 
 type serveOptions struct {
@@ -31,6 +32,8 @@ type serveOptions struct {
 	RegistrySpec     string
 	HealthAddr       string
 	GRPCAddr         string
+	Backend          string
+	ReasoningExt     string
 	Interval         time.Duration
 	MinSupport       int
 	MinParentSupport int
@@ -70,6 +73,8 @@ func runServe(args []string) error {
 	fs.StringVar(&opts.HealthAddr, "health-addr", opts.HealthAddr, "health/metrics listen address; empty disables HTTP")
 	fs.StringVar(&opts.GRPCAddr, "grpc-addr", opts.GRPCAddr, "gRPC reasoning listen address; empty disables gRPC")
 	fs.IntVar(&opts.GRPCPoolSize, "grpc-pool-size", opts.GRPCPoolSize, "read-only graph handles for gRPC reasoning")
+	fs.StringVar(&opts.Backend, "backend", opts.Backend, "gRPC reasoning backend: ladybug-native or symbolic-graph")
+	fs.StringVar(&opts.ReasoningExt, "reasoning-extension", opts.ReasoningExt, "reasoning extension path/name; empty loads reasoning by name")
 	fs.BoolVar(&opts.Once, "once", opts.Once, "run one IGL pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -85,6 +90,10 @@ func runServe(args []string) error {
 	}
 	if opts.Once && strings.TrimSpace(opts.GRPCAddr) != "" {
 		return fmt.Errorf("--once cannot be combined with --grpc-addr")
+	}
+	opts.Backend = strings.TrimSpace(opts.Backend)
+	if opts.Backend == "" {
+		return fmt.Errorf("--backend is required")
 	}
 	scopes, err := loadServeScopes(opts)
 	if err != nil {
@@ -155,6 +164,8 @@ func defaultServeOptions() serveOptions {
 		RegistrySpec:     firstEnv("PENSIERO_REGISTRY", "general"),
 		HealthAddr:       firstEnv("PENSIERO_HEALTH_ADDR", "127.0.0.1:8080"),
 		GRPCAddr:         os.Getenv("PENSIERO_GRPC_ADDR"),
+		Backend:          reasoning.NativeBackendName,
+		ReasoningExt:     os.Getenv("PENSIERO_REASONING_EXTENSION"),
 		Interval:         envDuration("PENSIERO_INTERVAL", time.Minute),
 		MinSupport:       envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
 		MinParentSupport: envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),

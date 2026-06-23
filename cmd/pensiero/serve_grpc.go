@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,17 +25,22 @@ type grpcReasoningRuntime struct {
 }
 
 func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
-	pool, err := newPooledGraphQuerier(opts.SourcePath, opts.GRPCPoolSize)
+	initHandle, err := graphHandleInitializerForBackend(opts.Backend, opts.ReasoningExt)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := newPooledGraphQuerier(opts.SourcePath, opts.GRPCPoolSize, initHandle)
 	if err != nil {
 		return nil, fmt.Errorf("load gRPC serving graph: %w", err)
 	}
 	// Zero values are intentional here: reasoning.Config.withDefaults supplies
 	// MaxHops, Decay, MinConf, Limit, and TauHigh for serving requests.
-	reasoner, err := reasoning.New(reasoning.BackendName, pool, reg, reasoning.Config{})
+	reasoner, err := reasoning.New(opts.Backend, pool, reg, reasoning.Config{})
 	if err != nil {
 		_ = pool.Close()
 		return nil, fmt.Errorf("create gRPC reasoner: %w", err)
 	}
+	reasoner = reasoning.NewPredicateConstrained(reasoner, reg)
 	listener, err := net.Listen("tcp", opts.GRPCAddr)
 	if err != nil {
 		_ = pool.Close()
@@ -64,6 +70,37 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		close(runtime.done)
 	}()
 	return runtime, nil
+}
+
+func graphHandleInitializerForBackend(backend string, reasoningExt string) (graphHandleInitializer, error) {
+	switch backend {
+	case reasoning.NativeBackendName:
+		return reasoningExtensionInitializer(reasoningExt), nil
+	case reasoning.BackendName:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported reasoning backend %q (supported: %s, %s)", backend, reasoning.NativeBackendName, reasoning.BackendName)
+	}
+}
+
+func reasoningExtensionInitializer(reasoningExt string) graphHandleInitializer {
+	ext := strings.TrimSpace(reasoningExt)
+	if ext == "" {
+		ext = "reasoning"
+	}
+	query := "LOAD EXTENSION " + cypherString(ext)
+	return func(ctx context.Context, handle graphHandle) error {
+		if _, err := handle.Query(ctx, query, nil); err != nil {
+			return fmt.Errorf("load reasoning extension %q: %w", ext, err)
+		}
+		return nil
+	}
+}
+
+func cypherString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return "'" + s + "'"
 }
 
 func (r *grpcReasoningRuntime) Close(logger *log.Logger) {
