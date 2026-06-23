@@ -330,14 +330,39 @@ std::string trimASCII(const std::string& s) {
 
 std::unordered_set<std::string> parseAcceptedPredicates(const std::string& accepted) {
     std::unordered_set<std::string> out;
-    std::stringstream ss(accepted);
     std::string token;
-    while (std::getline(ss, token, ',')) {
-        const std::string canon = normalizePredicate(trimASCII(token));
+    // Commas delimit predicates; callers escape literal ',' and '\' as '\,' and '\\'.
+    auto addToken = [&out](const std::string& raw) {
+        const std::string canon = normalizePredicate(trimASCII(raw));
         if (!canon.empty()) {
             out.insert(canon);
         }
+    };
+    bool escaped = false;
+    for (char c : accepted) {
+        if (escaped) {
+            if (c != ',' && c != '\\') {
+                token.push_back('\\');
+            }
+            token.push_back(c);
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == ',') {
+            addToken(token);
+            token.clear();
+            continue;
+        }
+        token.push_back(c);
     }
+    if (escaped) {
+        token.push_back('\\');
+    }
+    addToken(token);
     return out;
 }
 
@@ -543,10 +568,11 @@ std::vector<ReasonRow> runEntails(ClientContext* context, const std::string& sub
         r.proof = "[]";
         return {r};
     }
-    const bool enforcePredicate = !trimASCII(accepted).empty();
     std::unordered_set<std::string> acceptedPredicates;
-    if (enforcePredicate) {
+    bool enforcePredicate = false;
+    if (!trimASCII(accepted).empty()) {
         acceptedPredicates = parseAcceptedPredicates(accepted);
+        enforcePredicate = !acceptedPredicates.empty();
     }
 
     // Pick the highest-confidence accepted proof (shortest paths rank first, but

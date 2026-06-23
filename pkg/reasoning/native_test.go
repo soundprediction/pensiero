@@ -73,6 +73,36 @@ func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
 	}
 }
 
+func TestNativeReasonerEntailsEscapesAcceptedPredicateList(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{
+		{Canonical: "target"},
+		{Canonical: "comma,pred", SubPropertyOf: []string{"target"}},
+		{Canonical: "quote'pred", SubPropertyOf: []string{"target"}},
+		{Canonical: `slash\pred`, SubPropertyOf: []string{"target"}},
+	}, nil, nil)
+	var entailsQuery string
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if strings.Contains(q, "REASON_ENTAILS") {
+			entailsQuery = q
+			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+		}
+		return nil, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{})
+	n.EnforcePredicate = true
+
+	_, err := n.Entails(context.Background(), Claim{
+		Subject: "s'ub", Predicate: "target", Object: `o\bj`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `CALL REASON_ENTAILS('s\'ub', 'target', 'o\\bj', 4, 'comma\\,pred,quote\'pred,slash\\\\pred,target')`
+	if !strings.Contains(entailsQuery, want) {
+		t.Fatalf("query=%q, want to contain %q", entailsQuery, want)
+	}
+}
+
 func TestNativeReasonerEntailsKeepsLegacyArityByDefault(t *testing.T) {
 	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
 	var entailsQuery string

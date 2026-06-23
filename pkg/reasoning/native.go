@@ -62,7 +62,7 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 		"CALL REASON_ENTAILS(%s, %s, %s, %d) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
 		cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops)
 	if n.EnforcePredicate {
-		accepted := strings.Join(nativeAcceptedPredicates(n.reg, c.Predicate), ",")
+		accepted := encodeAcceptedPredicates(nativeAcceptedPredicates(n.reg, c.Predicate))
 		q = fmt.Sprintf(
 			"CALL REASON_ENTAILS(%s, %s, %s, %d, %s) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
 			cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops, cyStr(accepted))
@@ -113,6 +113,22 @@ func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string
 		return normKey(out[i]) < normKey(out[j])
 	})
 	return out
+}
+
+func encodeAcceptedPredicates(preds []string) string {
+	var b strings.Builder
+	for i, pred := range preds {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		for _, r := range pred {
+			if r == '\\' || r == ',' {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Derive calls CALL REASON_DERIVE(source, target, max_hops, min_conf).
