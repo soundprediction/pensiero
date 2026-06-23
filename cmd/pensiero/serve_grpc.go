@@ -19,14 +19,15 @@ import (
 const grpcGracefulStopTimeout = 5 * time.Second
 
 type grpcReasoningRuntime struct {
-	server   *grpc.Server
-	store    *generationStore
-	reloader *snapshotReloader
-	done     chan struct{}
-	stopOnce sync.Once
+	server    *grpc.Server
+	store     *generationStore
+	reloader  *snapshotReloader
+	telemetry *queryTelemetry
+	done      chan struct{}
+	stopOnce  sync.Once
 }
 
-func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
+func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, telemetry *queryTelemetry, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
 	buildGeneration, err := generationBuilderForServe(opts, reg)
 	if err != nil {
 		return nil, err
@@ -62,13 +63,16 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 	}
 
 	server := grpc.NewServer()
-	reasoner := reasoning.NewPredicateConstrained(&storeReasoner{store: store}, reg)
+	cfg := serveReasoningConfig()
+	cache := newProofCache(store, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
+	reasoner := newTelemetryReasoner(cache, telemetry)
 	grpcsvc.NewServer(reasoner).Register(server)
 	runtime := &grpcReasoningRuntime{
-		server:   server,
-		store:    store,
-		reloader: reloader,
-		done:     make(chan struct{}),
+		server:    server,
+		store:     store,
+		reloader:  reloader,
+		telemetry: telemetry,
+		done:      make(chan struct{}),
 	}
 	go func() {
 		select {
@@ -93,14 +97,13 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 	if err != nil {
 		return nil, err
 	}
+	cfg := serveReasoningConfig()
 	return func(ctx context.Context, path string) (*generation, error) {
 		pool, err := newPooledGraphQuerier(path, opts.GRPCPoolSize, initHandle)
 		if err != nil {
 			return nil, err
 		}
-		// Zero values are intentional here: reasoning.Config.withDefaults supplies
-		// MaxHops, Decay, MinConf, Limit, TauHigh, and ExcludeDeduced for serving requests.
-		reasoner, err := reasoning.New(opts.Backend, pool, reg, reasoning.Config{})
+		reasoner, err := reasoning.New(opts.Backend, pool, reg, cfg)
 		if err != nil {
 			_ = pool.Close()
 			return nil, fmt.Errorf("create gRPC reasoner: %w", err)
@@ -115,6 +118,16 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 			path:     path,
 		}, nil
 	}, nil
+}
+
+func serveReasoningConfig() reasoning.Config {
+	return reasoning.Config{
+		MaxHops: 4,
+		Decay:   0.9,
+		MinConf: 0.05,
+		Limit:   8,
+		TauHigh: 0.6,
+	}.WithExcludeDeduced(true)
 }
 
 func newGenerationID(path string) string {

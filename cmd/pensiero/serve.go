@@ -132,6 +132,10 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	grpcEnabled := strings.TrimSpace(opts.GRPCAddr) != ""
+	var reasoningTelemetry *queryTelemetry
+	if grpcEnabled {
+		reasoningTelemetry = newQueryTelemetry(defaultQueryTelemetryLimit)
+	}
 	readiness := newReadinessGate()
 	if opts.Once {
 		result, err := loop.RunOnce(ctx)
@@ -142,12 +146,12 @@ func runServe(args []string) error {
 		readiness.MarkReady()
 	}
 	if strings.TrimSpace(opts.HealthAddr) != "" {
-		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, readiness, logger); err != nil {
+		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, reasoningTelemetry, readiness, logger); err != nil {
 			return err
 		}
 	}
 	if grpcEnabled {
-		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, readiness, logger)
+		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, reasoningTelemetry, readiness, logger)
 		if err != nil {
 			return err
 		}
@@ -343,10 +347,11 @@ func scopeFromDescriptor(dir string, fileName string, desc scopeDescriptor, base
 	return generalization.Scope{Name: name, Config: cfg}, nil
 }
 
-func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, readiness *readinessGate, logger *log.Logger) (*http.Server, error) {
+func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, logger *log.Logger) (*http.Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		snapshot := metrics.Snapshot()
+		querySnapshot := reasoningTelemetry.Snapshot()
 		lastErr := lastMetricsError(snapshot)
 		status := "ok"
 		code := http.StatusOK
@@ -362,10 +367,26 @@ func startHealthServer(ctx context.Context, addr string, metrics *generalization
 			"last_error": lastErr,
 			"passes":     snapshot.Passes,
 			"scopes":     snapshot.Scopes,
+			"reasoning": map[string]any{
+				"cache_hit_ratio": querySnapshot.CacheHitRatio,
+				"total":           querySnapshot.Total,
+				"timeouts":        querySnapshot.Timeouts,
+			},
 		})
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, metrics.Snapshot())
+		snapshot := metrics.Snapshot()
+		payload := map[string]any{
+			"started_at": snapshot.StartedAt,
+			"last_pass":  snapshot.LastPass,
+			"scopes":     snapshot.Scopes,
+			"passes":     snapshot.Passes,
+		}
+		if reasoningTelemetry != nil {
+			payload["reasoning"] = reasoningTelemetry.Snapshot()
+			payload["reasoning_hot_keys"] = reasoningTelemetry.HotKeys(10)
+		}
+		writeJSON(w, http.StatusOK, payload)
 	})
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
