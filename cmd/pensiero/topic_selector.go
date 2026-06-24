@@ -55,7 +55,7 @@ type thoughtSource interface {
 
 func NewTopicSelector(store generationAcquirer, telemetry *queryTelemetry, reg *reasoning.PredicateRegistry, embedder cognitionEmbedder, cfg TopicSelectorConfig) *TopicSelector {
 	cfg = normalizeTopicSelectorConfig(cfg)
-	randomSource := newRandomThoughtSource(store, reg, cfg.RandomSampleLimit, cfg.Random)
+	randomSource := newRandomThoughtSource(store, cfg.RandomSampleLimit, cfg.Random)
 	sources := []weightedThoughtSource{
 		{Weight: cfg.QueryHotWeight, Source: &queryHotThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
 		{Weight: cfg.UnresolvedWeight, Source: &unresolvedThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
@@ -317,13 +317,12 @@ func (s *unresolvedThoughtSource) advance(n int) int {
 
 type randomThoughtSource struct {
 	store       generationAcquirer
-	reg         *reasoning.PredicateRegistry
 	sampleLimit int
 	mu          sync.Mutex
 	random      *rand.Rand
 }
 
-func newRandomThoughtSource(store generationAcquirer, reg *reasoning.PredicateRegistry, sampleLimit int, rnd *rand.Rand) *randomThoughtSource {
+func newRandomThoughtSource(store generationAcquirer, sampleLimit int, rnd *rand.Rand) *randomThoughtSource {
 	if sampleLimit <= 0 {
 		sampleLimit = defaultTopicRandomSampleLimit
 	}
@@ -332,7 +331,6 @@ func newRandomThoughtSource(store generationAcquirer, reg *reasoning.PredicateRe
 	}
 	return &randomThoughtSource{
 		store:       store,
-		reg:         reg,
 		sampleLimit: sampleLimit,
 		random:      rnd,
 	}
@@ -340,6 +338,15 @@ func newRandomThoughtSource(store generationAcquirer, reg *reasoning.PredicateRe
 
 func (s *randomThoughtSource) Name() string { return "random" }
 
+// Next samples a plausible *missing-link* candidate instead of a globally
+// random (entity, predicate, entity) triple. Pairing two arbitrary entities
+// with a registry predicate that the graph may not even use produces nonsense
+// questions ("disease is_a chemical") that are always unsupported. Instead it
+// seeds on an entity that has edges, then proposes a claim to an entity two
+// hops away (related, but not already directly connected) using a predicate the
+// seed actually participates in. The expected gain reflects the seed's
+// connectivity, so questions about central, well-connected entities rank above
+// peripheral ones.
 func (s *randomThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Thought{}, false, err
@@ -347,54 +354,128 @@ func (s *randomThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
 	if s == nil || s.store == nil {
 		return Thought{}, false, nil
 	}
-	s.mu.Lock()
-	skip := s.random.Intn(randomSampleSkipMax + 1)
-	s.mu.Unlock()
-	names, err := sampleEntityNames(ctx, s.store, s.sampleLimit, skip)
-	if err != nil || len(names) < 2 {
+	seeds, err := s.sampleSeeds(ctx)
+	if err != nil || len(seeds) == 0 {
 		return Thought{}, false, err
 	}
-	subject, object, ok := s.pickPair(names)
-	if !ok {
+	for _, seed := range seeds {
+		thought, ok, err := s.candidateForSeed(ctx, seed)
+		if err != nil {
+			return Thought{}, false, err
+		}
+		if ok {
+			return thought, true, nil
+		}
+	}
+	return Thought{}, false, nil
+}
+
+// sampleSeeds biases toward well-connected entities so questions concern central
+// topics (e.g. conditions) rather than peripheral leaf nodes (e.g. drug IDs),
+// which dominate the graph by count. Falls back to a uniform sample if the
+// degree-ranked query yields nothing.
+func (s *randomThoughtSource) sampleSeeds(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	degSkip := s.random.Intn(seedDegreeSkipMax + 1)
+	uniSkip := s.random.Intn(randomSampleSkipMax + 1)
+	s.mu.Unlock()
+	seeds, err := sampleSeedsByDegree(ctx, s.store, s.sampleLimit, degSkip)
+	if err != nil {
+		return nil, err
+	}
+	if len(seeds) == 0 {
+		if seeds, err = sampleEntityNames(ctx, s.store, s.sampleLimit, uniSkip); err != nil {
+			return nil, err
+		}
+	}
+	s.shuffleStrings(seeds)
+	return seeds, nil
+}
+
+// candidateForSeed proposes a missing-link claim from a seed entity, or ok=false
+// when the seed is isolated or has no unconnected two-hop neighbor.
+func (s *randomThoughtSource) candidateForSeed(ctx context.Context, seed string) (Thought, bool, error) {
+	gen, release := s.store.Acquire()
+	if gen == nil || gen.pool == nil {
+		release()
+		return Thought{}, false, errNoGeneration
+	}
+	defer release()
+
+	limit := s.sampleLimit * 4
+	if limit < 8 {
+		limit = 8
+	}
+	params := map[string]any{"seed": seed}
+	oneHop, err := gen.pool.Query(ctx, seedOneHopQuery(limit), params)
+	if err != nil {
+		return Thought{}, false, err
+	}
+	predicates := make([]string, 0, len(oneHop))
+	directNeighbors := map[string]struct{}{lowerKey(seed): {}}
+	seenPred := map[string]struct{}{}
+	for _, row := range oneHop {
+		if n := lowerKey(rowString(row, "neighbor")); n != "" {
+			directNeighbors[n] = struct{}{}
+		}
+		pred := normalizePredicateLabel(rowString(row, "predicate"))
+		if pred == "" {
+			continue
+		}
+		if _, ok := seenPred[pred]; ok {
+			continue
+		}
+		seenPred[pred] = struct{}{}
+		predicates = append(predicates, pred)
+	}
+	degree := len(directNeighbors) - 1 // exclude the seed itself
+	if len(predicates) == 0 {
+		return Thought{}, false, nil // isolated seed; no edges to generalize from
+	}
+
+	twoHop, err := gen.pool.Query(ctx, seedTwoHopQuery(limit), params)
+	if err != nil {
+		return Thought{}, false, err
+	}
+	candidates := make([]string, 0, len(twoHop))
+	seenCand := map[string]struct{}{}
+	for _, row := range twoHop {
+		name := strings.TrimSpace(rowString(row, "twohop"))
+		key := lowerKey(name)
+		if key == "" {
+			continue
+		}
+		if _, blocked := directNeighbors[key]; blocked {
+			continue // already directly connected (or the seed) -> not a missing link
+		}
+		if _, dup := seenCand[key]; dup {
+			continue
+		}
+		seenCand[key] = struct{}{}
+		candidates = append(candidates, name)
+	}
+	if len(candidates) == 0 {
 		return Thought{}, false, nil
 	}
-	predicate, ok := s.pickPredicate()
-	if !ok {
-		return Thought{}, false, nil
-	}
+
+	s.mu.Lock()
+	predicate := predicates[s.random.Intn(len(predicates))]
+	object := candidates[s.random.Intn(len(candidates))]
+	s.mu.Unlock()
+
 	return Thought{
 		Type:      ThoughtHypothesisTest,
-		Claim:     reasoning.Claim{Subject: subject, Predicate: predicate, Object: object},
+		Claim:     reasoning.Claim{Subject: seed, Predicate: predicate, Object: object},
 		Source:    s.Name(),
-		Rationale: "random bounded graph sample",
+		Rationale: "neighborhood missing-link candidate",
+		Meta:      map[string]any{"expected_gain": neighborhoodGain(degree)},
 	}, true, nil
 }
 
-func (s *randomThoughtSource) pickPair(names []string) (string, string, bool) {
+func (s *randomThoughtSource) shuffleStrings(values []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(names) < 2 {
-		return "", "", false
-	}
-	first := s.random.Intn(len(names))
-	second := s.random.Intn(len(names) - 1)
-	if second >= first {
-		second++
-	}
-	return names[first], names[second], true
-}
-
-func (s *randomThoughtSource) pickPredicate() (string, bool) {
-	if s == nil || s.reg == nil {
-		return "", false
-	}
-	preds := s.reg.AllCanonical()
-	if len(preds) == 0 {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return preds[s.random.Intn(len(preds))], true
+	s.random.Shuffle(len(values), func(i, j int) { values[i], values[j] = values[j], values[i] })
 }
 
 type semanticThoughtSource struct {
@@ -575,6 +656,101 @@ func randomEntitySampleQuery(skip, limit int) string {
 	// SKIP/LIMIT without ORDER BY: ladybug-compatible (no rand()); the offset is
 	// chosen randomly in Go so successive samples cover different regions.
 	return fmt.Sprintf("MATCH (n:Entity) WHERE n.name IS NOT NULL RETURN n.name AS name SKIP %d LIMIT %d", skip, limit)
+}
+
+// seedDegreeSkipMax bounds the random offset into the degree-ranked entity list,
+// keeping seeds among the most-connected entities while still varying which one.
+const seedDegreeSkipMax = 128
+
+// seedByDegreeQuery ranks entities by out-degree (edge count) so seed sampling
+// favours central entities. ladybug has no rand(); a random SKIP within the top
+// band varies the pick.
+func seedByDegreeQuery(skip, limit int) string {
+	if limit < 1 {
+		limit = 1
+	}
+	if skip < 0 {
+		skip = 0
+	}
+	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(r:RelatesToNode_) RETURN a.name AS name, count(r) AS deg ORDER BY deg DESC SKIP %d LIMIT %d", skip, limit)
+}
+
+// sampleSeedsByDegree returns distinct entity names from the degree-ranked band.
+func sampleSeedsByDegree(ctx context.Context, store generationAcquirer, limit, skip int) ([]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	gen, release := store.Acquire()
+	if gen == nil || gen.pool == nil {
+		release()
+		return nil, errNoGeneration
+	}
+	defer release()
+	rows, err := gen.pool.Query(ctx, seedByDegreeQuery(skip, limit), nil)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(rows))
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		name := strings.TrimSpace(rowString(row, "name"))
+		key := lowerKey(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// seedOneHopQuery returns the seed's outgoing (predicate, neighbor) edges over
+// the reified model. $seed is bound as a parameter so entity names containing
+// quotes/apostrophes are safe.
+func seedOneHopQuery(limit int) string {
+	if limit < 1 {
+		limit = 1
+	}
+	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(b:Entity) WHERE a.name = $seed RETURN r.name AS predicate, b.name AS neighbor LIMIT %d", limit)
+}
+
+// seedTwoHopQuery returns entities two hops from the seed -- candidate missing
+// links once the directly-connected ones are removed in Go.
+func seedTwoHopQuery(limit int) string {
+	if limit < 1 {
+		limit = 1
+	}
+	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(c:Entity) WHERE a.name = $seed AND c.name <> $seed RETURN DISTINCT c.name AS twohop LIMIT %d", limit)
+}
+
+// normalizePredicateLabel lowercases a graph predicate (stored upper-case, e.g.
+// CAUSES) to the canonical form claims use; the reasoner matches case-folded.
+func normalizePredicateLabel(p string) string {
+	return strings.ToLower(strings.TrimSpace(p))
+}
+
+func lowerKey(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// neighborhoodGain maps a seed's out-degree to an expected gain in [0.3, 0.8]:
+// resolving a missing link on a well-connected (central) entity is worth more
+// than one on a peripheral entity. Saturates at degree 10.
+func neighborhoodGain(degree int) float64 {
+	if degree < 0 {
+		degree = 0
+	}
+	d := float64(degree)
+	if d > 10 {
+		d = 10
+	}
+	return clamp01(0.3 + 0.5*(d/10))
 }
 
 func claimFromHotKey(key QueryHotKey) reasoning.Claim {
