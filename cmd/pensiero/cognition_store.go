@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/soundprediction/pensiero/pkg/reasoning"
@@ -14,9 +15,19 @@ const (
 	defaultUnconfirmedLimit = 256
 )
 
+// cognitionLabelsEnabled, when true, includes the raw entity labels alongside
+// their hashes in cognition introspection (/thinking, /questions). It defaults
+// to false so the endpoints stay privacy-preserving (hash-only); operators
+// serving non-sensitive knowledge graphs can opt in via --cognition-show-labels.
+var cognitionLabelsEnabled atomic.Bool
+
+func setCognitionLabels(enabled bool) { cognitionLabelsEnabled.Store(enabled) }
+
 type hashedClaim struct {
+	Subject     string `json:"subject,omitempty"`
 	SubjectHash string `json:"subject_hash,omitempty"`
 	Predicate   string `json:"predicate,omitempty"`
+	Object      string `json:"object,omitempty"`
 	ObjectHash  string `json:"object_hash,omitempty"`
 }
 
@@ -260,11 +271,16 @@ func claimDedupeKey(claim reasoning.Claim) string {
 
 func hashClaim(claim reasoning.Claim) hashedClaim {
 	claim = normalizeQuestionClaim(claim)
-	return hashedClaim{
+	hc := hashedClaim{
 		SubjectHash: hashEntityName(claim.Subject),
 		Predicate:   claim.Predicate,
 		ObjectHash:  hashEntityName(claim.Object),
 	}
+	if cognitionLabelsEnabled.Load() {
+		hc.Subject = claim.Subject
+		hc.Object = claim.Object
+	}
+	return hc
 }
 
 func clamp01(value float64) float64 {

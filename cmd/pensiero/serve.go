@@ -23,46 +23,47 @@ import (
 )
 
 type serveOptions struct {
-	SourcePath        string
-	SourceDir         string
-	ScopesCSV         string
-	ScopesDir         string
-	OutDir            string
-	PredicateCSV      string
-	PredicatePacksCSV string
-	TypePacksCSV      string
-	TaxonomicCSV      string
-	TaxonomicDir      string
-	RegistrySpec      string
-	HealthAddr        string
-	GRPCAddr          string
-	Backend           string
-	ReasoningExt      string
-	EmbedderURL       string
-	EmbedderModel     string
-	GoldenFile        string
-	LeaderMode        string
-	Interval          time.Duration
-	IGLQuiet          time.Duration
-	IGLMinPublish     time.Duration
-	CognitionInterval time.Duration
-	CognitionWindow   time.Duration
-	CognitionThought  time.Duration
-	MinSupport        int
-	MinParentSupport  int
-	MaxParentLevel    int
-	GRPCPoolSize      int
-	InventorySample   int
-	CognitionMax      int
-	QueryHotWeight    int
-	RandomWeight      int
-	UnresolvedWeight  int
-	SemanticWeight    int
-	RandomSampleLimit int
-	SemanticSample    int
-	MaxOpenTopics     int
-	Once              bool
-	DefaultTopic      string
+	SourcePath          string
+	SourceDir           string
+	ScopesCSV           string
+	ScopesDir           string
+	OutDir              string
+	PredicateCSV        string
+	PredicatePacksCSV   string
+	TypePacksCSV        string
+	TaxonomicCSV        string
+	TaxonomicDir        string
+	RegistrySpec        string
+	HealthAddr          string
+	GRPCAddr            string
+	Backend             string
+	ReasoningExt        string
+	EmbedderURL         string
+	EmbedderModel       string
+	GoldenFile          string
+	LeaderMode          string
+	Interval            time.Duration
+	IGLQuiet            time.Duration
+	IGLMinPublish       time.Duration
+	CognitionInterval   time.Duration
+	CognitionWindow     time.Duration
+	CognitionThought    time.Duration
+	MinSupport          int
+	MinParentSupport    int
+	MaxParentLevel      int
+	GRPCPoolSize        int
+	InventorySample     int
+	CognitionMax        int
+	QueryHotWeight      int
+	RandomWeight        int
+	UnresolvedWeight    int
+	SemanticWeight      int
+	RandomSampleLimit   int
+	SemanticSample      int
+	MaxOpenTopics       int
+	Once                bool
+	ShowCognitionLabels bool
+	DefaultTopic        string
 }
 
 type scopeDescriptor struct {
@@ -99,6 +100,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.SemanticWeight, "cognition-semantic-weight", opts.SemanticWeight, "fixed topic weight for embedder semantic neighbors")
 	fs.IntVar(&opts.RandomSampleLimit, "cognition-random-sample", opts.RandomSampleLimit, "bounded entity sample size for random cognition topics")
 	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
+	fs.BoolVar(&opts.ShowCognitionLabels, "cognition-show-labels", opts.ShowCognitionLabels, "include raw entity labels (not just hashes) in /thinking and /questions; default hashes-only for privacy")
 	fs.IntVar(&opts.MaxOpenTopics, "max-open-topics", opts.MaxOpenTopics, "maximum lazily-open topic graphs for gRPC serving")
 	fs.IntVar(&opts.MinSupport, "min-support", opts.MinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
@@ -186,6 +188,7 @@ func runServe(args []string) error {
 	questions := newQuestionStore(defaultQuestionLimit, logger)
 	unconfirmed := newUnconfirmedStore(defaultUnconfirmedLimit, logger)
 	thinking := newThinkingState(defaultThinkingRecentLimit)
+	setCognitionLabels(opts.ShowCognitionLabels)
 	var loop *generalization.Loop
 	var runner iglPassRunner
 	var leader scopeLeader
