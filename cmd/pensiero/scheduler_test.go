@@ -36,6 +36,101 @@ func TestIGLSchedulerRunsRunOnceWhenIdle(t *testing.T) {
 	}
 }
 
+func TestIGLSchedulerSkipsRunOnceWhenNotLeader(t *testing.T) {
+	clock := newSchedulerFakeClock()
+	load := NewLoadTracker(LoadTrackerConfig{Now: clock.Now})
+	ctx, cancel := context.WithCancel(context.Background())
+	sleeper := newSchedulerRecordingSleep(clock, cancel, 1)
+	leader := newSchedulerFakeLeader()
+	runner := &schedulerFakeRunner{}
+	scheduler := NewIGLScheduler(runner, load, IGLSchedulerConfig{
+		BaseInterval:       time.Second,
+		QuietFor:           0,
+		MinPublishInterval: 0,
+		Leader:             leader,
+		LeaderScopes:       []string{"alpha"},
+		Now:                clock.Now,
+		Sleep:              sleeper.Sleep,
+		Jitter:             identityJitter,
+	})
+	if err := scheduler.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.Count(); got != 0 {
+		t.Fatalf("RunOnce calls=%d, want 0", got)
+	}
+	if got := leader.TryCount("alpha"); got != 1 {
+		t.Fatalf("leader TryAcquire calls=%d, want 1", got)
+	}
+}
+
+func TestIGLSchedulerRunsRunOnceWhenLeaderHolds(t *testing.T) {
+	clock := newSchedulerFakeClock()
+	load := NewLoadTracker(LoadTrackerConfig{Now: clock.Now})
+	ctx, cancel := context.WithCancel(context.Background())
+	leader := newSchedulerFakeLeader()
+	leader.SetHeld("alpha", true)
+	runner := &schedulerFakeRunner{
+		run: func(context.Context) (generalization.PassResult, error) {
+			cancel()
+			return publishedPassResult(), nil
+		},
+	}
+	scheduler := NewIGLScheduler(runner, load, IGLSchedulerConfig{
+		BaseInterval:       time.Second,
+		QuietFor:           0,
+		MinPublishInterval: 0,
+		Leader:             leader,
+		LeaderScopes:       []string{"alpha"},
+		Now:                clock.Now,
+		Jitter:             identityJitter,
+	})
+	if err := scheduler.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.Count(); got != 1 {
+		t.Fatalf("RunOnce calls=%d, want 1", got)
+	}
+	if got := leader.TryCount("alpha"); got != 0 {
+		t.Fatalf("leader TryAcquire calls=%d, want 0 for already-held scope", got)
+	}
+}
+
+func TestIGLSchedulerReattemptsLeadershipBeforePass(t *testing.T) {
+	clock := newSchedulerFakeClock()
+	load := NewLoadTracker(LoadTrackerConfig{Now: clock.Now})
+	ctx, cancel := context.WithCancel(context.Background())
+	leader := newSchedulerFakeLeader()
+	leader.SetAcquire("alpha", true)
+	runner := &schedulerFakeRunner{
+		run: func(context.Context) (generalization.PassResult, error) {
+			cancel()
+			return publishedPassResult(), nil
+		},
+	}
+	scheduler := NewIGLScheduler(runner, load, IGLSchedulerConfig{
+		BaseInterval:       time.Second,
+		QuietFor:           0,
+		MinPublishInterval: 0,
+		Leader:             leader,
+		LeaderScopes:       []string{"alpha"},
+		Now:                clock.Now,
+		Jitter:             identityJitter,
+	})
+	if err := scheduler.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.Count(); got != 1 {
+		t.Fatalf("RunOnce calls=%d, want 1", got)
+	}
+	if got := leader.TryCount("alpha"); got != 1 {
+		t.Fatalf("leader TryAcquire calls=%d, want 1", got)
+	}
+	if !leader.Holds("alpha") {
+		t.Fatal("leader did not hold scope after successful re-attempt")
+	}
+}
+
 func TestIGLSchedulerBacksOffWhenNotIdle(t *testing.T) {
 	t.Run("in flight", func(t *testing.T) {
 		clock := newSchedulerFakeClock()
@@ -355,4 +450,68 @@ func publishedPassResult() generalization.PassResult {
 
 func identityJitter(delay time.Duration) time.Duration {
 	return delay
+}
+
+type schedulerFakeLeader struct {
+	mu       sync.Mutex
+	held     map[string]bool
+	acquire  map[string]bool
+	tryCount map[string]int
+}
+
+func newSchedulerFakeLeader() *schedulerFakeLeader {
+	return &schedulerFakeLeader{
+		held:     map[string]bool{},
+		acquire:  map[string]bool{},
+		tryCount: map[string]int{},
+	}
+}
+
+func (l *schedulerFakeLeader) TryAcquire(scope string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tryCount[scope]++
+	if !l.acquire[scope] {
+		return false, nil
+	}
+	l.held[scope] = true
+	return true, nil
+}
+
+func (l *schedulerFakeLeader) Holds(scope string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.held[scope]
+}
+
+func (l *schedulerFakeLeader) Release(scope string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.held, scope)
+	return nil
+}
+
+func (l *schedulerFakeLeader) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.held = map[string]bool{}
+	return nil
+}
+
+func (l *schedulerFakeLeader) SetHeld(scope string, held bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.held[scope] = held
+}
+
+func (l *schedulerFakeLeader) SetAcquire(scope string, acquire bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.acquire[scope] = acquire
+}
+
+func (l *schedulerFakeLeader) TryCount(scope string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tryCount[scope]
 }

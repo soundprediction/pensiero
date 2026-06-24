@@ -65,6 +65,17 @@ Reasoner instances are **stateless given a shared read-only graph**, so pool
 freely; each instance opens the same generalization/topic graph (read replicas /
 shared read-only volume).
 
+For `pensiero serve` pools that also run IGL, run N identical daemons behind the
+same gRPC target, for example `dns:///pensiero.svc:50072`. In shared snapshot
+mode, give every daemon the same `--out-dir`; the default `--leader-mode=flock`
+takes a POSIX `flock` file per scope in that directory, so exactly one daemon
+optimizes and publishes each `<scope>.g_g.ladybug` while the other daemons keep
+serving and hot-reload the published generation. Local snapshot mode is still
+available by giving each daemon its own `--out-dir`, or by using
+`--leader-mode=none` to preserve the single-instance behavior where every
+daemon leads every scope. `--leader-mode=k8s-lease` is reserved for a future
+Kubernetes Lease implementation.
+
 ## Regenerating the stubs
 
 ```bash

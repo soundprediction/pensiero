@@ -40,6 +40,7 @@ type serveOptions struct {
 	EmbedderURL       string
 	EmbedderModel     string
 	GoldenFile        string
+	LeaderMode        string
 	Interval          time.Duration
 	IGLQuiet          time.Duration
 	IGLMinPublish     time.Duration
@@ -112,10 +113,12 @@ func runServe(args []string) error {
 	fs.StringVar(&opts.EmbedderURL, "embedder-url", opts.EmbedderURL, "OpenAI-compatible /v1/embeddings base URL for optional semantic cognition; empty disables")
 	fs.StringVar(&opts.EmbedderModel, "embedder-model", opts.EmbedderModel, "embedding model name sent to the OpenAI-compatible embedder")
 	fs.StringVar(&opts.GoldenFile, "golden-file", opts.GoldenFile, "optional JSON golden claims for validating gRPC snapshot reloads")
+	fs.StringVar(&opts.LeaderMode, "leader-mode", opts.LeaderMode, "IGL leader election mode: flock, none, or k8s-lease")
 	fs.BoolVar(&opts.Once, "once", opts.Once, "run one IGL pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	opts.LeaderMode = normalizeLeaderMode(opts.LeaderMode)
 	if strings.TrimSpace(opts.SourcePath) == "" {
 		return fmt.Errorf("--source is required")
 	}
@@ -131,6 +134,12 @@ func runServe(args []string) error {
 	opts.Backend = strings.TrimSpace(opts.Backend)
 	if opts.Backend == "" {
 		return fmt.Errorf("--backend is required")
+	}
+	if opts.LeaderMode == leaderModeK8sLease {
+		return fmt.Errorf("--leader-mode=%s is not implemented yet", leaderModeK8sLease)
+	}
+	if opts.LeaderMode != leaderModeFlock && opts.LeaderMode != leaderModeNone {
+		return fmt.Errorf("unsupported --leader-mode %q (supported: %s, %s, %s)", opts.LeaderMode, leaderModeFlock, leaderModeNone, leaderModeK8sLease)
 	}
 	scopes, err := loadServeScopes(opts)
 	if err != nil {
@@ -172,6 +181,25 @@ func runServe(args []string) error {
 		Interval: opts.Interval,
 		OutDir:   opts.OutDir,
 	}
+	var runner iglPassRunner = loop
+	var leader scopeLeader
+	var leaderScopeNames []string
+	if opts.LeaderMode != leaderModeNone {
+		leader, err = newLeaderForMode(opts.LeaderMode, opts.OutDir)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := leader.Close(); err != nil {
+				logger.Printf("leader election close error=%v", err)
+			}
+		}()
+		leaderScopeNames, err = leadershipScopeNames(scopes)
+		if err != nil {
+			return err
+		}
+		runner = newLeaderGatedIGLRunner(loop, leader, logger)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -182,7 +210,7 @@ func runServe(args []string) error {
 	}
 	readiness := newReadinessGate()
 	if opts.Once {
-		result, err := loop.RunOnce(ctx)
+		result, err := runner.RunOnce(ctx)
 		printPassResult(result)
 		return err
 	}
@@ -203,10 +231,12 @@ func runServe(args []string) error {
 		startCognitionWorker(ctx, opts, grpcRuntime, reasoningTelemetry, loadTracker, reg, questions, unconfirmed, thinking, logger)
 	}
 	inventory.Start(ctx)
-	scheduler := NewIGLScheduler(loop, loadTracker, IGLSchedulerConfig{
+	scheduler := NewIGLScheduler(runner, loadTracker, IGLSchedulerConfig{
 		BaseInterval:       opts.Interval,
 		QuietFor:           opts.IGLQuiet,
 		MinPublishInterval: opts.IGLMinPublish,
+		Leader:             leader,
+		LeaderScopes:       leaderScopeNames,
 		Logger:             logger,
 	})
 	return runLowPriorityIGLWorker(ctx, scheduler.Run)
@@ -231,6 +261,7 @@ func defaultServeOptions() serveOptions {
 		EmbedderURL:       os.Getenv("PENSIERO_EMBEDDER_URL"),
 		EmbedderModel:     firstEnv("PENSIERO_EMBEDDER_MODEL", connector.DefaultEmbeddingModel),
 		GoldenFile:        os.Getenv("PENSIERO_GOLDEN_FILE"),
+		LeaderMode:        firstEnv("PENSIERO_LEADER_MODE", leaderModeFlock),
 		Interval:          envDuration("PENSIERO_INTERVAL", time.Minute),
 		IGLQuiet:          envDuration("PENSIERO_IGL_QUIET", defaultIGLQuiet),
 		IGLMinPublish:     envDuration("PENSIERO_IGL_MIN_PUBLISH", defaultIGLMinPublish),

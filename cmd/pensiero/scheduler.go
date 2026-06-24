@@ -29,6 +29,8 @@ type IGLSchedulerConfig struct {
 	MinPublishInterval time.Duration
 	MaxBackoff         time.Duration
 	LoadPoll           time.Duration
+	Leader             scopeLeader
+	LeaderScopes       []string
 	Now                func() time.Time
 	Sleep              func(context.Context, time.Duration) error
 	Jitter             func(time.Duration) time.Duration
@@ -58,6 +60,12 @@ func (s *IGLScheduler) Run(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
+		}
+		if !s.leadsAnyScope() {
+			if err := s.sleep(ctx, s.cfg.BaseInterval); err != nil {
+				return nil
+			}
+			continue
 		}
 		if !s.idle() {
 			delay := s.backoffDelay(busyStreak)
@@ -155,6 +163,28 @@ func (s *IGLScheduler) runPass(ctx context.Context) (generalization.PassResult, 
 
 func (s *IGLScheduler) idle() bool {
 	return s.load == nil || s.load.Idle(s.cfg.QuietFor)
+}
+
+func (s *IGLScheduler) leadsAnyScope() bool {
+	if s.cfg.Leader == nil || len(s.cfg.LeaderScopes) == 0 {
+		return true
+	}
+	leads := false
+	for _, scope := range s.cfg.LeaderScopes {
+		if s.cfg.Leader.Holds(scope) {
+			leads = true
+			continue
+		}
+		acquired, err := s.cfg.Leader.TryAcquire(scope)
+		if err != nil {
+			s.log("leader election scope=%s error=%v", scope, err)
+			continue
+		}
+		if acquired && s.cfg.Leader.Holds(scope) {
+			leads = true
+		}
+	}
+	return leads
 }
 
 func (s *IGLScheduler) publishWait() time.Duration {
