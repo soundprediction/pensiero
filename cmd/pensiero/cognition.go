@@ -309,7 +309,7 @@ func (e *ThoughtEngine) Execute(ctx context.Context, thought Thought) error {
 		case reasoning.VerdictContradicted:
 			return e.emitQuestion(ctx, claim, "candidate claim is contradicted by current evidence", expectedGainFromProof(result.Best, 0.85))
 		default:
-			return e.emitQuestion(ctx, claim, "candidate claim is unsupported and would improve coverage if resolved", expectedGainFromResult(result, 0.35))
+			return e.emitQuestion(ctx, claim, "candidate claim is unsupported and would improve coverage if resolved", unsupportedQuestionGain(thought, result))
 		}
 	default:
 		return nil
@@ -360,4 +360,24 @@ func expectedGainFromResult(result reasoning.EntailResult, fallback float64) flo
 		return clamp01(result.Best.Confidence)
 	}
 	return fallback
+}
+
+// unsupportedQuestionGain ranks an unsupported candidate. Unsupported claims
+// have no proof confidence, so a flat fallback made every question look equally
+// valuable. When the candidate source attached a connectivity-based gain
+// (Thought.Meta["expected_gain"], e.g. the neighborhood source), use it so
+// questions about central entities outrank peripheral ones.
+func unsupportedQuestionGain(thought Thought, result reasoning.EntailResult) float64 {
+	if result.Confidence > 0 {
+		return clamp01(result.Confidence)
+	}
+	if result.Best != nil && result.Best.Confidence > 0 {
+		return clamp01(result.Best.Confidence)
+	}
+	if thought.Meta != nil {
+		if gain, ok := thought.Meta["expected_gain"].(float64); ok && gain > 0 {
+			return clamp01(gain)
+		}
+	}
+	return 0.35
 }

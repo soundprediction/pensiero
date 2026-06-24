@@ -443,14 +443,74 @@ func (s *countingThoughtSource) Count() int64 {
 	return s.count.Load()
 }
 
+func TestRandomSourceNeighborhoodCandidate(t *testing.T) {
+	store := newTopicTestStore([]string{"seed-a", "seed-b"})
+	defer store.Close()
+	src := newRandomThoughtSource(store, 4, rand.New(rand.NewSource(7)))
+
+	thought, ok, err := src.Next(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("Next ok=%v err=%v", ok, err)
+	}
+	if thought.Source != "random" || thought.Type != ThoughtHypothesisTest {
+		t.Fatalf("thought=%#v, want random hypothesis-test", thought)
+	}
+	// Predicate must come from the graph's real vocabulary, case-folded.
+	if thought.Claim.Predicate != "causes" {
+		t.Fatalf("predicate=%q, want graph predicate 'causes'", thought.Claim.Predicate)
+	}
+	// Object must be the unconnected two-hop entity, never the direct neighbor.
+	if thought.Claim.Object != "two-hop-candidate" {
+		t.Fatalf("object=%q, want 'two-hop-candidate'", thought.Claim.Object)
+	}
+	if thought.Claim.Subject != "seed-a" && thought.Claim.Subject != "seed-b" {
+		t.Fatalf("subject=%q, want a sampled seed", thought.Claim.Subject)
+	}
+	// A connectivity-based gain must be attached (degree 1 -> 0.35).
+	gain, _ := thought.Meta["expected_gain"].(float64)
+	if gain <= 0 {
+		t.Fatalf("expected_gain=%v, want >0 from connectivity", thought.Meta["expected_gain"])
+	}
+}
+
+func TestRandomSourceIsolatedSeedYieldsNothing(t *testing.T) {
+	// A graph where seeds have no edges (one-hop returns nothing) must not
+	// emit a candidate rather than fabricate a random pair.
+	handle := &fakeGraphHandle{
+		query: func(_ context.Context, query string, _ map[string]any) ([]map[string]any, error) {
+			if strings.Contains(query, "AS predicate") || strings.Contains(query, "AS twohop") {
+				return nil, nil
+			}
+			return []map[string]any{{"name": "lonely"}}, nil
+		},
+	}
+	store := newGenerationStore(&generation{id: "iso", pool: newTestPool(handle), reasoner: testReasoner{name: "iso"}, path: "iso"})
+	defer store.Close()
+	src := newRandomThoughtSource(store, 4, rand.New(rand.NewSource(1)))
+	if _, ok, err := src.Next(context.Background()); ok || err != nil {
+		t.Fatalf("Next ok=%v err=%v, want no candidate for an isolated seed", ok, err)
+	}
+}
+
 func newTopicTestStore(names []string) *generationStore {
 	handle := &fakeGraphHandle{
-		query: func(context.Context, string, map[string]any) ([]map[string]any, error) {
-			rows := make([]map[string]any, 0, len(names))
-			for _, name := range names {
-				rows = append(rows, map[string]any{"name": name})
+		query: func(_ context.Context, query string, _ map[string]any) ([]map[string]any, error) {
+			switch {
+			case strings.Contains(query, "AS predicate"):
+				// One-hop edge for the seed: a real graph predicate (upper-case,
+				// as stored) and a directly-connected neighbor.
+				return []map[string]any{{"predicate": "CAUSES", "neighbor": "direct-neighbor"}}, nil
+			case strings.Contains(query, "AS twohop"):
+				// A two-hop entity that is not directly connected -> a candidate
+				// missing link.
+				return []map[string]any{{"twohop": "two-hop-candidate"}}, nil
+			default:
+				rows := make([]map[string]any, 0, len(names))
+				for _, name := range names {
+					rows = append(rows, map[string]any{"name": name})
+				}
+				return rows, nil
 			}
-			return rows, nil
 		},
 	}
 	return newGenerationStore(&generation{
