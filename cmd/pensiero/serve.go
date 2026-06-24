@@ -312,6 +312,7 @@ func defaultServeOptions() serveOptions {
 		GRPCAddr:          os.Getenv("PENSIERO_GRPC_ADDR"),
 		Backend:           reasoning.NativeBackendName,
 		ReasoningExt:      os.Getenv("PENSIERO_REASONING_EXTENSION"),
+		RulesGraph:        os.Getenv("PENSIERO_RULES_GRAPH"),
 		EmbedderURL:       os.Getenv("PENSIERO_EMBEDDER_URL"),
 		EmbedderModel:     firstEnv("PENSIERO_EMBEDDER_MODEL", connector.DefaultEmbeddingModel),
 		GoldenFile:        os.Getenv("PENSIERO_GOLDEN_FILE"),
