@@ -35,6 +35,10 @@ func run(args []string) error {
 		return runBuildGeneralization(args[1:])
 	case "serve":
 		return runServe(args[1:])
+	case "load-rules":
+		return runLoadRules(args[1:])
+	case "reason-check":
+		return runReasonCheck(args[1:])
 	case "-h", "--help", "help":
 		return usageError()
 	default:
