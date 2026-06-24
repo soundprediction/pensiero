@@ -24,6 +24,7 @@ import (
 
 type serveOptions struct {
 	SourcePath        string
+	SourceDir         string
 	ScopesCSV         string
 	ScopesDir         string
 	OutDir            string
@@ -59,7 +60,9 @@ type serveOptions struct {
 	SemanticWeight    int
 	RandomSampleLimit int
 	SemanticSample    int
+	MaxOpenTopics     int
 	Once              bool
+	DefaultTopic      string
 }
 
 type scopeDescriptor struct {
@@ -79,6 +82,7 @@ func runServe(args []string) error {
 	opts := defaultServeOptions()
 	fs := flagSet("serve")
 	fs.StringVar(&opts.SourcePath, "source", opts.SourcePath, "source graph path")
+	fs.StringVar(&opts.SourceDir, "source-dir", opts.SourceDir, "directory of per-topic serving graphs")
 	fs.StringVar(&opts.ScopesCSV, "scopes", opts.ScopesCSV, "comma-separated scope names")
 	fs.StringVar(&opts.ScopesDir, "scopes-dir", opts.ScopesDir, "directory of JSON scope descriptors")
 	fs.StringVar(&opts.OutDir, "out-dir", opts.OutDir, "published graph directory")
@@ -95,6 +99,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.SemanticWeight, "cognition-semantic-weight", opts.SemanticWeight, "fixed topic weight for embedder semantic neighbors")
 	fs.IntVar(&opts.RandomSampleLimit, "cognition-random-sample", opts.RandomSampleLimit, "bounded entity sample size for random cognition topics")
 	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
+	fs.IntVar(&opts.MaxOpenTopics, "max-open-topics", opts.MaxOpenTopics, "maximum lazily-open topic graphs for gRPC serving")
 	fs.IntVar(&opts.MinSupport, "min-support", opts.MinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
 	fs.IntVar(&opts.MaxParentLevel, "max-parent-level", opts.MaxParentLevel, "maximum parent depth to keep")
@@ -114,21 +119,34 @@ func runServe(args []string) error {
 	fs.StringVar(&opts.EmbedderModel, "embedder-model", opts.EmbedderModel, "embedding model name sent to the OpenAI-compatible embedder")
 	fs.StringVar(&opts.GoldenFile, "golden-file", opts.GoldenFile, "optional JSON golden claims for validating gRPC snapshot reloads")
 	fs.StringVar(&opts.LeaderMode, "leader-mode", opts.LeaderMode, "IGL leader election mode: flock, none, or k8s-lease")
+	fs.StringVar(&opts.DefaultTopic, "default-topic", opts.DefaultTopic, "fallback topic when keyword routing has no overlap")
 	fs.BoolVar(&opts.Once, "once", opts.Once, "run one IGL pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	opts.LeaderMode = normalizeLeaderMode(opts.LeaderMode)
-	if strings.TrimSpace(opts.SourcePath) == "" {
-		return fmt.Errorf("--source is required")
+	hasSource := strings.TrimSpace(opts.SourcePath) != ""
+	hasSourceDir := strings.TrimSpace(opts.SourceDir) != ""
+	grpcEnabled := strings.TrimSpace(opts.GRPCAddr) != ""
+	if !hasSource && !hasSourceDir {
+		return fmt.Errorf("--source or --source-dir is required")
 	}
-	if strings.TrimSpace(opts.OutDir) == "" {
+	if hasSourceDir && !grpcEnabled {
+		return fmt.Errorf("--grpc-addr is required with --source-dir")
+	}
+	if !hasSource && opts.Once {
+		return fmt.Errorf("--source is required with --once")
+	}
+	if hasSource && strings.TrimSpace(opts.OutDir) == "" {
 		return fmt.Errorf("--out-dir is required")
 	}
-	if strings.TrimSpace(opts.GRPCAddr) != "" && opts.GRPCPoolSize <= 0 {
+	if grpcEnabled && opts.GRPCPoolSize <= 0 {
 		return fmt.Errorf("--grpc-pool-size must be positive")
 	}
-	if opts.Once && strings.TrimSpace(opts.GRPCAddr) != "" {
+	if opts.MaxOpenTopics <= 0 {
+		opts.MaxOpenTopics = defaultMaxOpenTopics
+	}
+	if opts.Once && grpcEnabled {
 		return fmt.Errorf("--once cannot be combined with --grpc-addr")
 	}
 	opts.Backend = strings.TrimSpace(opts.Backend)
@@ -141,19 +159,26 @@ func runServe(args []string) error {
 	if opts.LeaderMode != leaderModeFlock && opts.LeaderMode != leaderModeNone {
 		return fmt.Errorf("unsupported --leader-mode %q (supported: %s, %s, %s)", opts.LeaderMode, leaderModeFlock, leaderModeNone, leaderModeK8sLease)
 	}
-	scopes, err := loadServeScopes(opts)
-	if err != nil {
-		return err
+	var scopes []generalization.Scope
+	var err error
+	if hasSource {
+		scopes, err = loadServeScopes(opts)
+		if err != nil {
+			return err
+		}
 	}
 	reg, _, err := loadRegistryWithTypePacks(opts.RegistrySpec, splitCSV(opts.PredicatePacksCSV), splitCSV(opts.TypePacksCSV))
 	if err != nil {
 		return err
 	}
-	source, err := openLadybugGraph(opts.SourcePath, true)
-	if err != nil {
-		return fmt.Errorf("open source: %w", err)
+	var source graphHandle
+	if hasSource {
+		source, err = openLadybugGraph(opts.SourcePath, true)
+		if err != nil {
+			return fmt.Errorf("open source: %w", err)
+		}
+		defer source.Close()
 	}
-	defer source.Close()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	metrics := generalization.NewMetrics()
@@ -161,30 +186,27 @@ func runServe(args []string) error {
 	questions := newQuestionStore(defaultQuestionLimit, logger)
 	unconfirmed := newUnconfirmedStore(defaultUnconfirmedLimit, logger)
 	thinking := newThinkingState(defaultThinkingRecentLimit)
-	inventory := newPredicateInventory(source, reg, PredicateInventoryConfig{
-		SampleLimit:     opts.InventorySample,
-		RefreshInterval: defaultPredicateInventoryInterval,
-		QuietFor:        opts.IGLQuiet,
-		Load:            loadTracker,
-		Logger:          logger,
-	})
-	loop := &generalization.Loop{
-		Publisher: &generalization.Publisher{
-			Source:   loadAwareSource{inner: source, load: loadTracker},
-			Registry: reg,
-			Writer:   ladybugSnapshotWriter{},
-			Validate: validateLadybugSnapshot,
-		},
-		Metrics:  metrics,
-		Logger:   logger,
-		Scopes:   scopes,
-		Interval: opts.Interval,
-		OutDir:   opts.OutDir,
-	}
-	var runner iglPassRunner = loop
+	var loop *generalization.Loop
+	var runner iglPassRunner
 	var leader scopeLeader
 	var leaderScopeNames []string
-	if opts.LeaderMode != leaderModeNone {
+	if hasSource {
+		loop = &generalization.Loop{
+			Publisher: &generalization.Publisher{
+				Source:   loadAwareSource{inner: source, load: loadTracker},
+				Registry: reg,
+				Writer:   ladybugSnapshotWriter{},
+				Validate: validateLadybugSnapshot,
+			},
+			Metrics:  metrics,
+			Logger:   logger,
+			Scopes:   scopes,
+			Interval: opts.Interval,
+			OutDir:   opts.OutDir,
+		}
+		runner = loop
+	}
+	if hasSource && opts.LeaderMode != leaderModeNone {
 		leader, err = newLeaderForMode(opts.LeaderMode, opts.OutDir)
 		if err != nil {
 			return err
@@ -203,7 +225,6 @@ func runServe(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	grpcEnabled := strings.TrimSpace(opts.GRPCAddr) != ""
 	var reasoningTelemetry *queryTelemetry
 	if grpcEnabled {
 		reasoningTelemetry = newQueryTelemetry(defaultQueryTelemetryLimit)
@@ -214,23 +235,46 @@ func runServe(args []string) error {
 		printPassResult(result)
 		return err
 	}
-	if !grpcEnabled {
-		readiness.MarkReady()
-	}
-	if strings.TrimSpace(opts.HealthAddr) != "" {
-		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, reasoningTelemetry, readiness, inventory, questions, unconfirmed, thinking, logger); err != nil {
-			return err
-		}
-	}
+	var grpcRuntime *grpcReasoningRuntime
 	if grpcEnabled {
-		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, reasoningTelemetry, loadTracker, readiness, logger)
+		grpcRuntime, err = startGRPCReasoningServer(ctx, opts, reg, reasoningTelemetry, loadTracker, readiness, logger)
 		if err != nil {
 			return err
 		}
 		defer grpcRuntime.Close(logger)
 		startCognitionWorker(ctx, opts, grpcRuntime, reasoningTelemetry, loadTracker, reg, questions, unconfirmed, thinking, logger)
+	} else {
+		readiness.MarkReady()
 	}
-	inventory.Start(ctx)
+	var inventory *predicateInventory
+	var inventoryGraph reasoning.GraphQuerier
+	if hasSource {
+		inventoryGraph = source
+	}
+	if grpcRuntime != nil && hasSourceDir {
+		inventoryGraph = generationGraphQuerier{source: grpcRuntime.cognitionSource}
+	}
+	if inventoryGraph != nil {
+		inventory = newPredicateInventory(inventoryGraph, reg, PredicateInventoryConfig{
+			SampleLimit:     opts.InventorySample,
+			RefreshInterval: defaultPredicateInventoryInterval,
+			QuietFor:        opts.IGLQuiet,
+			Load:            loadTracker,
+			Logger:          logger,
+		})
+	}
+	if strings.TrimSpace(opts.HealthAddr) != "" {
+		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, reasoningTelemetry, readiness, inventory, questions, unconfirmed, thinking, grpcRuntime, logger); err != nil {
+			return err
+		}
+	}
+	if inventory != nil {
+		inventory.Start(ctx)
+	}
+	if !hasSource {
+		<-ctx.Done()
+		return nil
+	}
 	scheduler := NewIGLScheduler(runner, loadTracker, IGLSchedulerConfig{
 		BaseInterval:       opts.Interval,
 		QuietFor:           opts.IGLQuiet,
@@ -245,6 +289,7 @@ func runServe(args []string) error {
 func defaultServeOptions() serveOptions {
 	return serveOptions{
 		SourcePath:        os.Getenv("PENSIERO_SOURCE"),
+		SourceDir:         os.Getenv("PENSIERO_SOURCE_DIR"),
 		ScopesCSV:         os.Getenv("PENSIERO_SCOPES"),
 		ScopesDir:         os.Getenv("PENSIERO_SCOPES_DIR"),
 		OutDir:            os.Getenv("PENSIERO_OUT_DIR"),
@@ -280,11 +325,13 @@ func defaultServeOptions() serveOptions {
 		SemanticWeight:    envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
 		RandomSampleLimit: envInt("PENSIERO_COGNITION_RANDOM_SAMPLE", defaultTopicRandomSampleLimit),
 		SemanticSample:    envInt("PENSIERO_COGNITION_SEMANTIC_SAMPLE", defaultTopicSemanticSample),
+		MaxOpenTopics:     envInt("PENSIERO_MAX_OPEN_TOPICS", defaultMaxOpenTopics),
+		DefaultTopic:      os.Getenv("PENSIERO_DEFAULT_TOPIC"),
 	}
 }
 
 func startCognitionWorker(ctx context.Context, opts serveOptions, runtime *grpcReasoningRuntime, telemetry *queryTelemetry, load *LoadTracker, reg *reasoning.PredicateRegistry, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState, logger *log.Logger) {
-	if runtime == nil || runtime.store == nil || runtime.cache == nil {
+	if runtime == nil || runtime.cognitionSource == nil || runtime.cache == nil {
 		return
 	}
 	var embedder cognitionEmbedder
@@ -298,7 +345,7 @@ func startCognitionWorker(ctx context.Context, opts serveOptions, runtime *grpcR
 			logger.Printf("embedder url=%s model=%s", strings.TrimRight(opts.EmbedderURL, "/"), opts.EmbedderModel)
 		}
 	}
-	selector := NewTopicSelector(runtime.store, telemetry, reg, embedder, TopicSelectorConfig{
+	selector := NewTopicSelector(runtime.cognitionSource, telemetry, reg, embedder, TopicSelectorConfig{
 		QueryHotWeight:    opts.QueryHotWeight,
 		RandomWeight:      opts.RandomWeight,
 		UnresolvedWeight:  opts.UnresolvedWeight,
@@ -493,8 +540,8 @@ func scopeFromDescriptor(dir string, fileName string, desc scopeDescriptor, base
 	return generalization.Scope{Name: name, Config: cfg}, nil
 }
 
-func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState, logger *log.Logger) (*http.Server, error) {
-	mux := healthHandler(metrics, reasoningTelemetry, readiness, inventory, questions, unconfirmed, thinking)
+func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState, topics topicStatusProvider, logger *log.Logger) (*http.Server, error) {
+	mux := healthHandler(metrics, reasoningTelemetry, readiness, inventory, questions, unconfirmed, thinking, topics)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("health listen: %w", err)
@@ -518,7 +565,7 @@ func startHealthServer(ctx context.Context, addr string, metrics *generalization
 	return server, nil
 }
 
-func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState) http.Handler {
+func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState, topics topicStatusProvider) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		snapshot := metrics.Snapshot()
@@ -533,7 +580,7 @@ func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTel
 			status = "degraded"
 			code = http.StatusServiceUnavailable
 		}
-		writeJSON(w, code, map[string]any{
+		payload := map[string]any{
 			"status":     status,
 			"last_error": lastErr,
 			"passes":     snapshot.Passes,
@@ -543,7 +590,11 @@ func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTel
 				"total":           querySnapshot.Total,
 				"timeouts":        querySnapshot.Timeouts,
 			},
-		})
+		}
+		if topics != nil {
+			payload["topics"] = topics.TopicSnapshot()
+		}
+		writeJSON(w, code, payload)
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		snapshot := metrics.Snapshot()
@@ -556,6 +607,9 @@ func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTel
 		if reasoningTelemetry != nil {
 			payload["reasoning"] = reasoningTelemetry.Snapshot()
 			payload["reasoning_hot_keys"] = reasoningTelemetry.HotKeys(10)
+		}
+		if topics != nil {
+			payload["topics"] = topics.TopicSnapshot()
 		}
 		writeJSON(w, http.StatusOK, payload)
 	})

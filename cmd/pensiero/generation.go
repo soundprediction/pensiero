@@ -12,6 +12,19 @@ const generationRollbackSlots = 1
 
 var errNoGeneration = errors.New("no live reasoning generation")
 
+type generationRoute struct {
+	Text string
+}
+
+type generationProvider interface {
+	AcquireGeneration(context.Context, generationRoute) (*generation, func(), error)
+	ProviderName() string
+}
+
+type generationAcquirer interface {
+	Acquire() (*generation, func())
+}
+
 type generation struct {
 	id       string
 	pool     *pooledGraphQuerier
@@ -70,6 +83,25 @@ func (s *generationStore) Acquire() (*generation, func()) {
 			s.release(ref)
 		})
 	}
+}
+
+func (s *generationStore) AcquireGeneration(_ context.Context, _ generationRoute) (*generation, func(), error) {
+	gen, release := s.Acquire()
+	if gen == nil || gen.reasoner == nil {
+		release()
+		return nil, func() {}, errNoGeneration
+	}
+	return gen, release, nil
+}
+
+func (s *generationStore) ProviderName() string {
+	gen, release := s.Acquire()
+	if gen == nil || gen.reasoner == nil {
+		release()
+		return "generation-store"
+	}
+	defer release()
+	return gen.reasoner.Name()
 }
 
 func (s *generationStore) Swap(next *generation) bool {

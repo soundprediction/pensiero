@@ -19,13 +19,15 @@ import (
 const grpcGracefulStopTimeout = 5 * time.Second
 
 type grpcReasoningRuntime struct {
-	server    *grpc.Server
-	store     *generationStore
-	cache     *proofCache
-	reloader  *snapshotReloader
-	telemetry *queryTelemetry
-	done      chan struct{}
-	stopOnce  sync.Once
+	server          *grpc.Server
+	store           *generationStore
+	topics          *topicGenerationManager
+	cognitionSource generationAcquirer
+	cache           *proofCache
+	reloader        *snapshotReloader
+	telemetry       *queryTelemetry
+	done            chan struct{}
+	stopOnce        sync.Once
 }
 
 func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reasoning.PredicateRegistry, telemetry *queryTelemetry, load *LoadTracker, readiness *readinessGate, logger *log.Logger) (*grpcReasoningRuntime, error) {
@@ -41,40 +43,68 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		Golden:   goldenSet,
 		Registry: reg,
 	}
-	initial, err := buildGeneration(ctx, opts.SourcePath)
-	if err != nil {
-		return nil, fmt.Errorf("load gRPC serving graph: %w", err)
+	var provider generationProvider
+	var store *generationStore
+	var topics *topicGenerationManager
+	var reloader *snapshotReloader
+	var cognitionSource generationAcquirer
+	var initial *generation
+	graphLabel := strings.TrimSpace(opts.SourcePath)
+	if strings.TrimSpace(opts.SourceDir) != "" {
+		topics, err = newTopicGenerationManager(ctx, opts.SourceDir, opts.DefaultTopic, opts.MaxOpenTopics, opts.Interval, buildGeneration, validator.Validate, logger)
+		if err != nil {
+			return nil, err
+		}
+		provider = topics
+		cognitionSource = topics
+		graphLabel = opts.SourceDir
+	} else {
+		initial, err = buildGeneration(ctx, opts.SourcePath)
+		if err != nil {
+			return nil, fmt.Errorf("load gRPC serving graph: %w", err)
+		}
+		if err := validator.Validate(ctx, initial); err != nil {
+			closeGeneration(initial)
+			return nil, err
+		}
+		store = newGenerationStore(initial)
+		reloader = newSnapshotReloader(opts.SourcePath, opts.Interval, buildGeneration, validator.Validate, store, logger)
+		if fp, err := snapshotFingerprintForPath(opts.SourcePath); err == nil {
+			reloader.setLast(fp)
+		}
+		reloader.Start(ctx)
+		provider = store
+		cognitionSource = store
 	}
-	if err := validator.Validate(ctx, initial); err != nil {
-		closeGeneration(initial)
-		return nil, err
-	}
-	store := newGenerationStore(initial)
-	reloader := newSnapshotReloader(opts.SourcePath, opts.Interval, buildGeneration, validator.Validate, store, logger)
-	if fp, err := snapshotFingerprintForPath(opts.SourcePath); err == nil {
-		reloader.setLast(fp)
-	}
-	reloader.Start(ctx)
 
 	listener, err := net.Listen("tcp", opts.GRPCAddr)
 	if err != nil {
-		reloader.Close()
-		_ = store.Close()
+		if reloader != nil {
+			reloader.Close()
+		}
+		if store != nil {
+			_ = store.Close()
+		}
+		if topics != nil {
+			_ = topics.Close()
+		}
 		return nil, fmt.Errorf("grpc listen %s: %w", opts.GRPCAddr, err)
 	}
 
 	server := grpc.NewServer()
 	cfg := serveReasoningConfig()
-	cache := newProofCache(store, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
+	cache := newProofCache(provider, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
 	reasoner := newTelemetryReasonerWithLoad(cache, telemetry, load)
 	grpcsvc.NewServer(reasoner).Register(server)
 	runtime := &grpcReasoningRuntime{
-		server:    server,
-		store:     store,
-		cache:     cache,
-		reloader:  reloader,
-		telemetry: telemetry,
-		done:      make(chan struct{}),
+		server:          server,
+		store:           store,
+		topics:          topics,
+		cognitionSource: cognitionSource,
+		cache:           cache,
+		reloader:        reloader,
+		telemetry:       telemetry,
+		done:            make(chan struct{}),
 	}
 	go func() {
 		select {
@@ -84,7 +114,11 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		}
 	}()
 	go func() {
-		logger.Printf("grpc addr=%s backend=%s graph=%s generation=%s pool_size=%d", listener.Addr().String(), reasoner.Name(), opts.SourcePath, initial.id, opts.GRPCPoolSize)
+		if initial != nil {
+			logger.Printf("grpc addr=%s backend=%s graph=%s generation=%s pool_size=%d", listener.Addr().String(), reasoner.Name(), graphLabel, initial.id, opts.GRPCPoolSize)
+		} else {
+			logger.Printf("grpc addr=%s backend=%s source_dir=%s topics=%d max_open_topics=%d pool_size=%d", listener.Addr().String(), reasoner.Name(), graphLabel, len(topics.topics), topics.maxOpen, opts.GRPCPoolSize)
+		}
 		readiness.MarkReady()
 		if err := server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			logger.Printf("grpc error=%v", err)
@@ -192,5 +226,34 @@ func (r *grpcReasoningRuntime) Close(logger *log.Logger) {
 				logger.Printf("grpc generation store close error=%v", err)
 			}
 		}
+		if r.topics != nil {
+			if err := r.topics.Close(); err != nil && logger != nil {
+				logger.Printf("grpc topic manager close error=%v", err)
+			}
+		}
 	})
+}
+
+func (r *grpcReasoningRuntime) TopicSnapshot() topicServingSnapshot {
+	if r == nil {
+		return topicServingSnapshot{}
+	}
+	if r.topics != nil {
+		return r.topics.TopicSnapshot()
+	}
+	if r.store == nil {
+		return topicServingSnapshot{}
+	}
+	gen, release := r.store.Acquire()
+	defer release()
+	item := openTopicSnapshot{}
+	if gen != nil {
+		item.Topic = strings.TrimSuffix(filepath.Base(gen.path), filepath.Ext(gen.path))
+		item.Path = gen.path
+		item.GenerationID = gen.id
+	}
+	return topicServingSnapshot{
+		Available: []string{item.Topic},
+		Open:      []openTopicSnapshot{item},
+	}
 }

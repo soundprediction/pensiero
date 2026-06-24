@@ -229,7 +229,7 @@ func TestQuestionSinkDedupeAndQuestionsEndpoint(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/questions", nil)
 	rec := httptest.NewRecorder()
-	healthHandler(nil, nil, newReadinessGate(), nil, questions, nil, nil).ServeHTTP(rec, req)
+	healthHandler(nil, nil, newReadinessGate(), nil, questions, nil, nil, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", rec.Code)
 	}
@@ -257,7 +257,7 @@ func TestUnconfirmedEndpointSnapshot(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/unconfirmed", nil)
 	rec := httptest.NewRecorder()
-	healthHandler(nil, nil, newReadinessGate(), nil, nil, unconfirmed, nil).ServeHTTP(rec, req)
+	healthHandler(nil, nil, newReadinessGate(), nil, nil, unconfirmed, nil, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", rec.Code)
 	}
@@ -303,7 +303,7 @@ func TestThinkingEndpointReturnsCurrentAndRecentThoughtState(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/thinking", nil)
 	rec := httptest.NewRecorder()
-	healthHandler(nil, nil, newReadinessGate(), nil, questions, unconfirmed, thinking).ServeHTTP(rec, req)
+	healthHandler(nil, nil, newReadinessGate(), nil, questions, unconfirmed, thinking, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", rec.Code)
 	}
