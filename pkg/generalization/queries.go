@@ -199,6 +199,23 @@ func (b *Builder) directRelations(ctx context.Context, scope []EntityRef, predic
 	return out, nil
 }
 
+func (b *Builder) sourcePredicates(ctx context.Context) ([]string, error) {
+	rows, err := b.source.Query(ctx, sourcePredicatesCypher(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("generalization predicate read: %w", err)
+	}
+	set := map[string]bool{}
+	for _, row := range rows {
+		if err := checkBuildContext(ctx); err != nil {
+			return nil, err
+		}
+		if predicate := firstString(row, "predicate", "name"); predicate != "" {
+			set[predicate] = true
+		}
+	}
+	return sortedKeys(set), nil
+}
+
 func scopeEntitiesCypher() string {
 	return `
 MATCH (n:Entity)
@@ -228,6 +245,13 @@ RETURN child.uuid AS child_id,
        1 AS depth,
        rel.name AS predicate,
        1.0 AS confidence
+`
+}
+
+func sourcePredicatesCypher() string {
+	return `
+MATCH ()-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->()
+RETURN DISTINCT r.name AS predicate
 `
 }
 

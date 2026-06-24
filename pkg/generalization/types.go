@@ -1,6 +1,7 @@
 package generalization
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -84,6 +85,10 @@ type Graph struct {
 	Scope     string
 	Nodes     []Node
 	Relations []Relation
+}
+
+type DroppedEdgeBackup interface {
+	Record(ctx context.Context, scope string, dropped []Relation) error
 }
 
 type Stats struct {
