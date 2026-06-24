@@ -245,6 +245,38 @@ func TestQuestionSinkDedupeAndQuestionsEndpoint(t *testing.T) {
 	}
 }
 
+func TestCognitionLabelsOptIn(t *testing.T) {
+	claim := reasoning.Claim{Subject: "Acute Myocardial Infarction", Predicate: "has_symptom", Object: "chest pain"}
+
+	// Default (hashes-only) must not carry raw labels.
+	if hc := hashClaim(claim); hc.Subject != "" || hc.Object != "" {
+		t.Fatalf("default hashClaim leaked labels: %#v", hc)
+	}
+
+	// Opt in: labels appear alongside the hashes, hashes still present.
+	setCognitionLabels(true)
+	defer setCognitionLabels(false)
+	hc := hashClaim(claim)
+	if hc.Subject != claim.Subject || hc.Object != claim.Object {
+		t.Fatalf("labels not surfaced when enabled: %#v", hc)
+	}
+	if hc.SubjectHash != hashEntityName(claim.Subject) || hc.ObjectHash != hashEntityName(claim.Object) {
+		t.Fatalf("hashes missing/changed when labels enabled: %#v", hc)
+	}
+
+	// The /questions endpoint should now include the raw labels.
+	questions := newQuestionStore(8, nil)
+	if err := questions.Emit(context.Background(), []reasoning.Question{{Claim: claim, Rationale: "x", ExpectedGain: 0.5}}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/questions", nil)
+	rec := httptest.NewRecorder()
+	healthHandler(nil, nil, newReadinessGate(), nil, questions, nil, nil, nil).ServeHTTP(rec, req)
+	if body := rec.Body.String(); !strings.Contains(body, "Acute Myocardial Infarction") || !strings.Contains(body, "chest pain") {
+		t.Fatalf("labels not present in /questions when enabled: %s", body)
+	}
+}
+
 func TestUnconfirmedEndpointSnapshot(t *testing.T) {
 	unconfirmed := newUnconfirmedStore(8, nil)
 	claim := reasoning.Claim{Subject: "unconfirmed-secret-subject", Predicate: "is_a", Object: "unconfirmed-secret-object"}
