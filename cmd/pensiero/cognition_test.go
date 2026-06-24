@@ -502,18 +502,17 @@ func TestBridgeSourceGeneralizationCandidate(t *testing.T) {
 		t.Fatalf("Next ok=%v err=%v", ok, err)
 	}
 	if thought.Type != ThoughtGeneralizationBridge || thought.Source != "bridge" {
-		t.Fatalf("thought=%#v, want generalization-bridge", thought)
+		t.Fatalf("thought=%#v, want factorize thought", thought)
 	}
-	// The high-similarity, not-directly-connected entity must be chosen; the
-	// direct neighbor must be excluded.
-	if thought.Claim.Object != "bridge-candidate" {
-		t.Fatalf("object=%q, want 'bridge-candidate' (direct-neighbor must be excluded)", thought.Claim.Object)
+	// The densest co-connected partner must be chosen (sparse one ignored).
+	if thought.Claim.Object != "dense-partner" {
+		t.Fatalf("object=%q, want 'dense-partner' (densest shared-neighbour block)", thought.Claim.Object)
 	}
 	if thought.Claim.Predicate != "shares_generalization_with" {
 		t.Fatalf("predicate=%q, want generalization framing", thought.Claim.Predicate)
 	}
 	if g, _ := thought.Meta["expected_gain"].(float64); g <= 0.5 {
-		t.Fatalf("expected_gain=%v, want a high bridge gain", thought.Meta["expected_gain"])
+		t.Fatalf("expected_gain=%v, want gain scaled by shared-neighbour density", thought.Meta["expected_gain"])
 	}
 
 	// Execute must emit a question (not assert an edge, not run entailment).
@@ -531,13 +530,12 @@ func newTopicTestStore(names []string) *generationStore {
 	handle := &fakeGraphHandle{
 		query: func(_ context.Context, query string, _ map[string]any) ([]map[string]any, error) {
 			switch {
-			case strings.Contains(query, "array_cosine_similarity"):
-				// Embedding-similarity candidates for the bridge source: a
-				// related-but-unconnected entity (high sim) plus the seed's
-				// direct neighbor (must be excluded by the source).
+			case strings.Contains(query, "AS shared"):
+				// Shared-neighbour ranking for the factorization source: the
+				// densest co-connected partner first.
 				return []map[string]any{
-					{"name": "bridge-candidate", "sim": float64(0.72)},
-					{"name": "direct-neighbor", "sim": float64(0.66)},
+					{"name": "dense-partner", "shared": int64(42)},
+					{"name": "sparse-partner", "shared": int64(1)},
 				}, nil
 			case strings.Contains(query, "AS predicate"):
 				// One-hop edge for the seed: a real graph predicate (upper-case,

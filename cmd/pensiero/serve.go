@@ -328,11 +328,11 @@ func defaultServeOptions() serveOptions {
 		// (and thereby shrink), so the question-generating sources (bridge,
 		// unresolved-contradiction, neighborhood, semantic) outweigh proof
 		// precompute, which only warms the cache and asks nothing.
-		QueryHotWeight:   envInt("PENSIERO_COGNITION_QUERY_HOT_WEIGHT", 1),
-		RandomWeight:     envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 2),
-		UnresolvedWeight: envInt("PENSIERO_COGNITION_UNRESOLVED_WEIGHT", 2),
-		SemanticWeight:   envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
-		BridgeWeight:     envInt("PENSIERO_COGNITION_BRIDGE_WEIGHT", 3),
+		QueryHotWeight:    envInt("PENSIERO_COGNITION_QUERY_HOT_WEIGHT", 1),
+		RandomWeight:      envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 2),
+		UnresolvedWeight:  envInt("PENSIERO_COGNITION_UNRESOLVED_WEIGHT", 2),
+		SemanticWeight:    envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
+		BridgeWeight:      envInt("PENSIERO_COGNITION_BRIDGE_WEIGHT", 3),
 		RandomSampleLimit: envInt("PENSIERO_COGNITION_RANDOM_SAMPLE", defaultTopicRandomSampleLimit),
 		SemanticSample:    envInt("PENSIERO_COGNITION_SEMANTIC_SAMPLE", defaultTopicSemanticSample),
 		MaxOpenTopics:     envInt("PENSIERO_MAX_OPEN_TOPICS", defaultMaxOpenTopics),

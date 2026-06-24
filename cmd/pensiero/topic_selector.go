@@ -486,9 +486,11 @@ func (s *randomThoughtSource) shuffleStrings(values []string) {
 
 const (
 	defaultBridgeHubLimit = 150
-	bridgeSimLo           = 0.45
-	bridgeSimHi           = 0.85
 	bridgeHubTTL          = 10 * time.Minute
+	// minSharedForFactor is the minimum shared-neighbour count for a pair to be
+	// worth a factorization question: below this there is little dense structure
+	// to absorb into a generalization.
+	minSharedForFactor = 5
 )
 
 // bridgeThoughtSource ponders connections between two nodes that are
@@ -568,10 +570,10 @@ func (s *bridgeThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
 	s.mu.Lock()
 	seed := hubs[s.random.Intn(len(hubs))]
 	s.mu.Unlock()
-	return s.bridgeFromSeed(ctx, seed, hubs)
+	return s.bridgeFromSeed(ctx, seed)
 }
 
-func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, hubs []string) (Thought, bool, error) {
+func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string) (Thought, bool, error) {
 	gen, release := s.store.Acquire()
 	if gen == nil || gen.pool == nil {
 		release()
@@ -579,43 +581,28 @@ func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, h
 	}
 	defer release()
 
-	limit := s.sampleLimit * 4
+	limit := s.sampleLimit * 2
 	if limit < 8 {
 		limit = 8
 	}
-	// Embedding-near hub candidates (similarity band excludes near-synonyms).
-	cand, err := gen.pool.Query(ctx, bridgeCosineQuery(seed, hubs, bridgeSimLo, bridgeSimHi, limit), nil)
+	// The entity sharing the MOST neighbours with the seed is the strongest
+	// factorization candidate: their many shared edges can be re-routed through
+	// one shared generalization (an N x M block collapses to N + M), which forms
+	// a local neighbourhood and lowers the graph's global density.
+	rows, err := gen.pool.Query(ctx, sharedNeighborQuery(limit), map[string]any{"seed": seed})
 	if err != nil {
 		return Thought{}, false, err
 	}
-	if len(cand) == 0 {
-		return Thought{}, false, nil
-	}
-	// The seed's direct neighbours: skip pairs already directly connected, since
-	// the objective is to draw *distant* entities closer through the
-	// generalization graph, not to restate an existing edge.
-	oneHop, err := gen.pool.Query(ctx, seedOneHopQuery(limit*2), map[string]any{"seed": seed})
-	if err != nil {
-		return Thought{}, false, err
-	}
-	directs := map[string]struct{}{lowerKey(seed): {}}
-	for _, row := range oneHop {
-		if n := lowerKey(rowString(row, "neighbor")); n != "" {
-			directs[n] = struct{}{}
-		}
-	}
-	// Highest-similarity candidate that is not already directly connected.
-	object, bestSim := "", 0.0
-	for _, row := range cand {
+	var object string
+	var shared int64
+	for _, row := range rows { // ordered by shared count descending
 		name := strings.TrimSpace(rowString(row, "name"))
-		if name == "" {
+		if name == "" || lowerKey(name) == lowerKey(seed) {
 			continue
 		}
-		if _, blocked := directs[lowerKey(name)]; blocked {
-			continue
-		}
-		if sim := rowFloat(row, "sim"); object == "" || sim > bestSim {
-			object, bestSim = name, sim
+		if sh := int64(rowFloat(row, "shared")); sh >= minSharedForFactor {
+			object, shared = name, sh
+			break
 		}
 	}
 	if object == "" {
@@ -625,8 +612,8 @@ func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, h
 		Type:      ThoughtGeneralizationBridge,
 		Claim:     reasoning.Claim{Subject: seed, Predicate: "shares_generalization_with", Object: object},
 		Source:    s.Name(),
-		Rationale: "embedding-near but generalization-distant",
-		Meta:      map[string]any{"expected_gain": bridgeGain(bestSim)},
+		Rationale: fmt.Sprintf("densely co-connected (%d shared neighbours); factoring through a shared generalization would reduce global density", shared),
+		Meta:      map[string]any{"expected_gain": factorGain(shared), "shared_neighbours": shared},
 	}, true, nil
 }
 
@@ -881,44 +868,26 @@ func seedTwoHopQuery(limit int) string {
 	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(c:Entity) WHERE a.name = $seed AND c.name <> $seed RETURN DISTINCT c.name AS twohop LIMIT %d", limit)
 }
 
-// bridgeCosineQuery scores the seed's embedding similarity against a bounded set
-// of hub entities and keeps those in the [lo, hi] band. Hub names are inlined as
-// escaped Cypher string literals (entity names contain apostrophes, so $list
-// params are avoided). array_cosine_similarity is a built-in over the stored
-// name_embedding -- no vector extension required.
-func bridgeCosineQuery(seed string, hubs []string, lo, hi float64, limit int) string {
+// sharedNeighborQuery ranks entities by how many graph neighbours they share
+// with the seed (over the reified model). A high shared count means a dense
+// co-connection block that can be factored through a single shared
+// generalization, lowering global density. $seed is a bound parameter.
+func sharedNeighborQuery(limit int) string {
 	if limit < 1 {
 		limit = 1
 	}
-	var list strings.Builder
-	list.WriteByte('[')
-	for i, h := range hubs {
-		if i > 0 {
-			list.WriteByte(',')
-		}
-		list.WriteString(cypherString(h))
-	}
-	list.WriteByte(']')
-	seedLit := cypherString(seed)
-	return fmt.Sprintf("MATCH (a:Entity {name:%s}) MATCH (b:Entity) WHERE b.name IN %s AND b.name <> %s AND b.name_embedding IS NOT NULL WITH b, array_cosine_similarity(a.name_embedding, b.name_embedding) AS sim WHERE sim > %f AND sim < %f RETURN b.name AS name, sim ORDER BY sim DESC LIMIT %d",
-		seedLit, list.String(), seedLit, lo, hi, limit)
+	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(m:Entity)<-[:RELATES_TO]-(:RelatesToNode_)<-[:RELATES_TO]-(b:Entity) WHERE a.name = $seed AND b.name <> $seed RETURN b.name AS name, count(DISTINCT m) AS shared ORDER BY shared DESC LIMIT %d", limit)
 }
 
-// bridgeGain maps the embedding similarity within the band to a high expected
-// gain (0.55-0.95): a semantically close pair with no direct edge is a strong
-// candidate missing link.
-func bridgeGain(sim float64) float64 {
-	if bridgeSimHi <= bridgeSimLo {
-		return 0.75
+// factorGain maps the shared-neighbour count to an expected gain in [0.5, 0.9]:
+// the denser the shared block, the more global density a factorization removes.
+// Saturates at 50 shared neighbours.
+func factorGain(shared int64) float64 {
+	d := float64(shared)
+	if d > 50 {
+		d = 50
 	}
-	n := (sim - bridgeSimLo) / (bridgeSimHi - bridgeSimLo)
-	if n < 0 {
-		n = 0
-	}
-	if n > 1 {
-		n = 1
-	}
-	return clamp01(0.55 + 0.4*n)
+	return clamp01(0.5 + 0.4*(d/50))
 }
 
 func rowFloat(row map[string]any, key string) float64 {
