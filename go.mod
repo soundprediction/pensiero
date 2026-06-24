@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/LadybugDB/go-ladybug v0.17.0
 	github.com/cozodb/cozo-lib-go v0.7.5
-	github.com/soundprediction/predicato v0.9.20-0.20260624175310-b1a9b12c43b8
+	github.com/soundprediction/predicato v0.9.20-0.20260624183417-869d6e5d5112
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 )
