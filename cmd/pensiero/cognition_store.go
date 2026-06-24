@@ -261,6 +261,20 @@ func normalizeQuestionClaim(claim reasoning.Claim) reasoning.Claim {
 	}
 }
 
+// isTautologyClaim reports whether a claim is trivially circular. A self-loop
+// (subject == object, case-insensitive) is a tautology UNLESS the predicate
+// model declares the predicate reflexive (self-application meaningful, e.g. a
+// thing interacting with / inhibiting / activating itself) — directly or
+// inherited from a super-property. Whether a self-loop is a tautology is a
+// property of the predicate, resolved via the registry.
+func isTautologyClaim(reg *reasoning.PredicateRegistry, claim reasoning.Claim) bool {
+	subject := strings.TrimSpace(claim.Subject)
+	if subject == "" || !strings.EqualFold(subject, strings.TrimSpace(claim.Object)) {
+		return false
+	}
+	return !reg.IsReflexive(claim.Predicate)
+}
+
 func claimDedupeKey(claim reasoning.Claim) string {
 	claim = normalizeQuestionClaim(claim)
 	if claim.Subject == "" || claim.Predicate == "" || claim.Object == "" {

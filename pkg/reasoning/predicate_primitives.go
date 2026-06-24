@@ -39,7 +39,14 @@ var medicalPredicates = []PredicateMeta{
 	{Canonical: "prevented_by", InverseOf: "prevents", SubPropertyOf: []string{"associated_with"}},
 	{Canonical: "contraindicated_for", InverseOf: "has_contraindication"},
 	{Canonical: "has_contraindication", InverseOf: "contraindicated_for"},
-	{Canonical: "interacts_with", Chars: Symmetric},
+	// Molecular/regulatory relations where self-application is a genuine fact
+	// (homodimerization, autoinhibition, autoregulation): mark Reflexive so a
+	// self-loop (X interacts/inhibits/activates X) is NOT treated as a tautology.
+	{Canonical: "interacts_with", Chars: Symmetric | Reflexive},
+	{Canonical: "inhibits", InverseOf: "inhibited_by", Chars: Reflexive},
+	{Canonical: "inhibited_by", InverseOf: "inhibits"},
+	{Canonical: "activates", InverseOf: "activated_by", Chars: Reflexive},
+	{Canonical: "activated_by", InverseOf: "activates"},
 	{Canonical: "diagnosed_by", InverseOf: "diagnoses"},
 	{Canonical: "diagnoses", InverseOf: "diagnosed_by"},
 }
@@ -73,7 +80,10 @@ var medicalAliases = map[string]string{
 	"co-occurs with": "co_occurs_with",
 	"treats":         "treats", "treated by": "treated_by", "treated with": "treated_by",
 	"used to treat": "treats", "indicated for": "treats",
-	"contraindicated for": "contraindicated_for", "interacts with": "interacts_with",
+	"contraindicated for": "contraindicated_for",
+	"interacts with":      "interacts_with", "interacts": "interacts_with", "interact": "interacts_with",
+	"inhibits": "inhibits", "inhibit": "inhibits", "inhibited by": "inhibited_by",
+	"activates": "activates", "activate": "activates", "activated by": "activated_by",
 	"diagnosed by": "diagnosed_by", "diagnoses": "diagnoses",
 }
 
