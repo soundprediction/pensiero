@@ -99,7 +99,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.RandomWeight, "cognition-random-weight", opts.RandomWeight, "fixed topic weight for random graph samples; minimum 1")
 	fs.IntVar(&opts.UnresolvedWeight, "cognition-unresolved-weight", opts.UnresolvedWeight, "fixed topic weight for unresolved contradiction checks")
 	fs.IntVar(&opts.SemanticWeight, "cognition-semantic-weight", opts.SemanticWeight, "fixed topic weight for embedder semantic neighbors")
-	fs.IntVar(&opts.BridgeWeight, "cognition-bridge-weight", opts.BridgeWeight, "fixed topic weight for embedding-bridge missing-link hypotheses (two embedding-near but unconnected hub entities)")
+	fs.IntVar(&opts.BridgeWeight, "cognition-bridge-weight", opts.BridgeWeight, "fixed topic weight for factorization questions (two hub entities sharing many same-predicate neighbours -> ask for a shared generalization)")
 	fs.IntVar(&opts.RandomSampleLimit, "cognition-random-sample", opts.RandomSampleLimit, "bounded entity sample size for random cognition topics")
 	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
 	fs.BoolVar(&opts.ShowCognitionLabels, "cognition-show-labels", opts.ShowCognitionLabels, "include raw entity labels (not just hashes) in /thinking and /questions; default hashes-only for privacy")

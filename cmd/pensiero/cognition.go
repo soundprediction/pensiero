@@ -322,7 +322,11 @@ func (e *ThoughtEngine) Execute(ctx context.Context, thought Thought) error {
 		// The two entities share a dense block of neighbours. Rather than assert a
 		// direct edge, ask what shared generalization would factor that block --
 		// forming a neighbourhood and reducing the graph's global density.
-		return e.emitQuestion(ctx, claim, "densely co-connected; what shared generalization would factor them into a neighbourhood (reducing global density)?", unsupportedQuestionGain(thought, reasoning.EntailResult{}))
+		rationale := thought.Rationale
+		if rationale == "" {
+			rationale = "densely co-connected; what shared generalization would factor them into a neighbourhood (reducing global density)?"
+		}
+		return e.emitQuestion(ctx, claim, rationale, unsupportedQuestionGain(thought, reasoning.EntailResult{}))
 	default:
 		return nil
 	}

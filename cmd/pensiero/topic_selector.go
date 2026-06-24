@@ -57,12 +57,15 @@ type thoughtSource interface {
 
 func NewTopicSelector(store generationAcquirer, telemetry *queryTelemetry, reg *reasoning.PredicateRegistry, embedder cognitionEmbedder, cfg TopicSelectorConfig) *TopicSelector {
 	cfg = normalizeTopicSelectorConfig(cfg)
-	randomSource := newRandomThoughtSource(store, cfg.RandomSampleLimit, cfg.Random)
+	// Each source gets its own RNG (derived from the configured one) so that
+	// concurrent thought sources never share a single *rand.Rand under different
+	// mutexes. The selector keeps cfg.Random for its own pick order.
+	randomSource := newRandomThoughtSource(store, cfg.RandomSampleLimit, deriveRand(cfg.Random))
 	sources := []weightedThoughtSource{
 		{Weight: cfg.QueryHotWeight, Source: &queryHotThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
 		{Weight: cfg.UnresolvedWeight, Source: &unresolvedThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
 		{Weight: cfg.RandomWeight, Source: randomSource},
-		{Weight: cfg.BridgeWeight, Source: newBridgeThoughtSource(store, cfg.RandomSampleLimit, cfg.Random)},
+		{Weight: cfg.BridgeWeight, Source: newBridgeThoughtSource(store, cfg.RandomSampleLimit, deriveRand(cfg.Random))},
 	}
 	if embedder != nil && cfg.SemanticWeight > 0 {
 		sources = append(sources, weightedThoughtSource{
@@ -74,7 +77,7 @@ func NewTopicSelector(store generationAcquirer, telemetry *queryTelemetry, reg *
 				embedder:    embedder,
 				hotLimit:    cfg.HotKeyLimit,
 				sampleLimit: cfg.SemanticSample,
-				random:      cfg.Random,
+				random:      deriveRand(cfg.Random),
 			},
 		})
 	}
@@ -100,6 +103,15 @@ func newTopicSelectorFromSources(sources []weightedThoughtSource, rnd *rand.Rand
 		}
 	}
 	return &TopicSelector{rand: rnd, sources: kept, randomSource: randomSource}
+}
+
+// deriveRand returns an independent RNG seeded from r, so concurrent sources do
+// not share one *rand.Rand. Falls back to a time seed when r is nil.
+func deriveRand(r *rand.Rand) *rand.Rand {
+	if r == nil {
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	return rand.New(rand.NewSource(r.Int63()))
 }
 
 func normalizeTopicSelectorConfig(cfg TopicSelectorConfig) TopicSelectorConfig {
@@ -493,19 +505,27 @@ const (
 	minSharedForFactor = 5
 )
 
+type bridgeFactorRole string
+
+const (
+	bridgeRoleHead bridgeFactorRole = "head"
+	bridgeRoleTail bridgeFactorRole = "tail"
+)
+
 // bridgeThoughtSource ponders connections between two nodes that are
-// semantically close (embedding-near, via the stored name_embedding) but not
-// directly connected in the graph -- candidate long-distance / missing links,
-// which are the highest-value gaps to resolve. It seeds on well-connected "hub"
-// entities (cached, degree-ranked) so the pondered pairs are central, and uses
-// a similarity *band* so it proposes related-but-distinct pairs rather than
-// synonyms. Uses the embedding model's stored output; no external embedder call.
+// co-connected through many same-predicate neighbours. It seeds on
+// well-connected "hub" entities (cached, degree-ranked) so the pondered pairs
+// are central, then asks whether their dense same-dimension block should be
+// factored through a shared generalization.
 type bridgeThoughtSource struct {
 	store       generationAcquirer
 	random      *rand.Rand
 	now         func() time.Time
-	hubs        []string
-	hubsAt      time.Time
+	headHubs    []string
+	headHubsAt  time.Time
+	tailHubs    []string
+	tailHubsAt  time.Time
+	nextRole    int
 	sampleLimit int
 	hubLimit    int
 	mu          sync.Mutex
@@ -531,15 +551,28 @@ func (s *bridgeThoughtSource) Name() string { return "bridge" }
 
 // ensureHubs returns the cached degree-ranked hub names, refreshing when stale.
 // On error it keeps the last good set so transient failures don't stall.
-func (s *bridgeThoughtSource) ensureHubs(ctx context.Context) ([]string, error) {
+func (s *bridgeThoughtSource) ensureHubs(ctx context.Context, role bridgeFactorRole) ([]string, error) {
 	s.mu.Lock()
-	fresh := len(s.hubs) > 0 && s.now().Sub(s.hubsAt) < bridgeHubTTL
-	cached := s.hubs
+	cached := s.headHubs
+	cachedAt := s.headHubsAt
+	if role == bridgeRoleTail {
+		cached = s.tailHubs
+		cachedAt = s.tailHubsAt
+	}
+	fresh := len(cached) > 0 && s.now().Sub(cachedAt) < bridgeHubTTL
 	s.mu.Unlock()
 	if fresh {
 		return cached, nil
 	}
-	names, err := sampleSeedsByDegree(ctx, s.store, s.hubLimit, 0)
+	var (
+		names []string
+		err   error
+	)
+	if role == bridgeRoleTail {
+		names, err = sampleSeedsByIncomingDegree(ctx, s.store, s.hubLimit, 0)
+	} else {
+		names, err = sampleSeedsByDegree(ctx, s.store, s.hubLimit, 0)
+	}
 	if err != nil {
 		return cached, err
 	}
@@ -547,8 +580,13 @@ func (s *bridgeThoughtSource) ensureHubs(ctx context.Context) ([]string, error) 
 		return cached, nil
 	}
 	s.mu.Lock()
-	s.hubs = names
-	s.hubsAt = s.now()
+	if role == bridgeRoleTail {
+		s.tailHubs = names
+		s.tailHubsAt = s.now()
+	} else {
+		s.headHubs = names
+		s.headHubsAt = s.now()
+	}
 	s.mu.Unlock()
 	return names, nil
 }
@@ -560,7 +598,8 @@ func (s *bridgeThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
 	if s == nil || s.store == nil {
 		return Thought{}, false, nil
 	}
-	hubs, err := s.ensureHubs(ctx)
+	role := s.nextBridgeRole()
+	hubs, err := s.ensureHubs(ctx, role)
 	if err != nil {
 		return Thought{}, false, err
 	}
@@ -570,10 +609,21 @@ func (s *bridgeThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
 	s.mu.Lock()
 	seed := hubs[s.random.Intn(len(hubs))]
 	s.mu.Unlock()
-	return s.bridgeFromSeed(ctx, seed)
+	return s.bridgeFromSeed(ctx, seed, role)
 }
 
-func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string) (Thought, bool, error) {
+func (s *bridgeThoughtSource) nextBridgeRole() bridgeFactorRole {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	role := bridgeRoleHead
+	if s.nextRole%2 == 1 {
+		role = bridgeRoleTail
+	}
+	s.nextRole++
+	return role
+}
+
+func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, role bridgeFactorRole) (Thought, bool, error) {
 	gen, release := s.store.Acquire()
 	if gen == nil || gen.pool == nil {
 		release()
@@ -585,35 +635,47 @@ func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string) (
 	if limit < 8 {
 		limit = 8
 	}
-	// The entity sharing the MOST neighbours with the seed is the strongest
-	// factorization candidate: their many shared edges can be re-routed through
-	// one shared generalization (an N x M block collapses to N + M), which forms
-	// a local neighbourhood and lowers the graph's global density.
-	rows, err := gen.pool.Query(ctx, sharedNeighborQuery(limit), map[string]any{"seed": seed})
+	// The entity sharing the MOST same-predicate neighbours with the seed is the
+	// strongest factorization candidate for this predicate+role dimension.
+	rows, err := gen.pool.Query(ctx, sharedFactorQuery(role, limit), map[string]any{"seed": seed})
 	if err != nil {
 		return Thought{}, false, err
 	}
-	var object string
-	var shared int64
-	for _, row := range rows { // ordered by shared count descending
+	var (
+		object    string
+		predicate string
+		shared    int64
+	)
+	for _, row := range rows {
 		name := strings.TrimSpace(rowString(row, "name"))
 		if name == "" || lowerKey(name) == lowerKey(seed) {
 			continue
 		}
-		if sh := int64(rowFloat(row, "shared")); sh >= minSharedForFactor {
-			object, shared = name, sh
-			break
+		pred := normalizePredicateLabel(rowString(row, "predicate"))
+		if pred == "" {
+			continue
 		}
+		sh := int64(rowFloat(row, "shared"))
+		if sh < minSharedForFactor || sh <= shared {
+			continue
+		}
+		object, predicate, shared = name, pred, sh
 	}
 	if object == "" {
 		return Thought{}, false, nil
 	}
+	roleName := string(role)
 	return Thought{
 		Type:      ThoughtGeneralizationBridge,
-		Claim:     reasoning.Claim{Subject: seed, Predicate: "shares_generalization_with", Object: object},
+		Claim:     reasoning.Claim{Subject: seed, Predicate: "shares_generalization_with:" + roleName + ":" + predicate, Object: object},
 		Source:    s.Name(),
-		Rationale: fmt.Sprintf("densely co-connected (%d shared neighbours); factoring through a shared generalization would reduce global density", shared),
-		Meta:      map[string]any{"expected_gain": factorGain(shared), "shared_neighbours": shared},
+		Rationale: factorizationRationale(predicate, role, shared),
+		Meta: map[string]any{
+			"expected_gain":     factorizationExpectedGain(shared),
+			"shared_neighbours": shared,
+			"predicate":         predicate,
+			"role":              roleName,
+		},
 	}, true, nil
 }
 
@@ -811,7 +873,19 @@ func seedByDegreeQuery(skip, limit int) string {
 	if skip < 0 {
 		skip = 0
 	}
-	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(r:RelatesToNode_) RETURN a.name AS name, count(r) AS deg ORDER BY deg DESC SKIP %d LIMIT %d", skip, limit)
+	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(r:RelatesToNode_) WHERE a.name IS NOT NULL RETURN a.name AS name, count(r) AS deg ORDER BY deg DESC SKIP %d LIMIT %d", skip, limit)
+}
+
+// seedByIncomingDegreeQuery ranks entities by incoming edge count so tail-role
+// factorization starts from objects that many subjects already point at.
+func seedByIncomingDegreeQuery(skip, limit int) string {
+	if limit < 1 {
+		limit = 1
+	}
+	if skip < 0 {
+		skip = 0
+	}
+	return fmt.Sprintf("MATCH (a:Entity)<-[:RELATES_TO]-(r:RelatesToNode_) WHERE a.name IS NOT NULL RETURN a.name AS name, count(r) AS deg ORDER BY deg DESC SKIP %d LIMIT %d", skip, limit)
 }
 
 // sampleSeedsByDegree returns distinct entity names from the degree-ranked band.
@@ -829,6 +903,42 @@ func sampleSeedsByDegree(ctx context.Context, store generationAcquirer, limit, s
 	}
 	defer release()
 	rows, err := gen.pool.Query(ctx, seedByDegreeQuery(skip, limit), nil)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(rows))
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		name := strings.TrimSpace(rowString(row, "name"))
+		key := lowerKey(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// sampleSeedsByIncomingDegree returns distinct object-side hub names from the
+// incoming-degree-ranked band.
+func sampleSeedsByIncomingDegree(ctx context.Context, store generationAcquirer, limit, skip int) ([]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	gen, release := store.Acquire()
+	if gen == nil || gen.pool == nil {
+		release()
+		return nil, errNoGeneration
+	}
+	defer release()
+	rows, err := gen.pool.Query(ctx, seedByIncomingDegreeQuery(skip, limit), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -868,26 +978,49 @@ func seedTwoHopQuery(limit int) string {
 	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(c:Entity) WHERE a.name = $seed AND c.name <> $seed RETURN DISTINCT c.name AS twohop LIMIT %d", limit)
 }
 
-// sharedNeighborQuery ranks entities by how many graph neighbours they share
-// with the seed (over the reified model). A high shared count means a dense
-// co-connection block that can be factored through a single shared
-// generalization, lowering global density. $seed is a bound parameter.
-func sharedNeighborQuery(limit int) string {
+func sharedFactorQuery(role bridgeFactorRole, limit int) string {
+	if role == bridgeRoleTail {
+		return sharedFactorTailQuery(limit)
+	}
+	return sharedFactorHeadQuery(limit)
+}
+
+// sharedFactorHeadQuery ranks entities that share objects with the seed through
+// the same predicate. $seed is a bound parameter.
+func sharedFactorHeadQuery(limit int) string {
 	if limit < 1 {
 		limit = 1
 	}
-	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(m:Entity)<-[:RELATES_TO]-(:RelatesToNode_)<-[:RELATES_TO]-(b:Entity) WHERE a.name = $seed AND b.name <> $seed RETURN b.name AS name, count(DISTINCT m) AS shared ORDER BY shared DESC LIMIT %d", limit)
+	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(ra:RelatesToNode_)-[:RELATES_TO]->(m:Entity)<-[:RELATES_TO]-(rb:RelatesToNode_)<-[:RELATES_TO]-(b:Entity) WHERE a.name = $seed AND b.name <> $seed AND ra.name IS NOT NULL AND ra.name = rb.name RETURN ra.name AS predicate, b.name AS name, count(DISTINCT m) AS shared ORDER BY shared DESC LIMIT %d", limit)
 }
 
-// factorGain maps the shared-neighbour count to an expected gain in [0.5, 0.9]:
-// the denser the shared block, the more global density a factorization removes.
-// Saturates at 50 shared neighbours.
-func factorGain(shared int64) float64 {
-	d := float64(shared)
-	if d > 50 {
-		d = 50
+// sharedFactorTailQuery ranks entities that share subjects with the seed through
+// the same predicate. $seed is a bound parameter.
+func sharedFactorTailQuery(limit int) string {
+	if limit < 1 {
+		limit = 1
 	}
-	return clamp01(0.5 + 0.4*(d/50))
+	return fmt.Sprintf("MATCH (a:Entity)<-[:RELATES_TO]-(ra:RelatesToNode_)<-[:RELATES_TO]-(m:Entity)-[:RELATES_TO]->(rb:RelatesToNode_)-[:RELATES_TO]->(b:Entity) WHERE a.name = $seed AND b.name <> $seed AND ra.name IS NOT NULL AND ra.name = rb.name RETURN ra.name AS predicate, b.name AS name, count(DISTINCT m) AS shared ORDER BY shared DESC LIMIT %d", limit)
+}
+
+func factorizationExpectedGain(shared int64) float64 {
+	raw := 2 * float64(shared)
+	densityGain := 0.0
+	if raw > 0 {
+		factored := 2 + float64(shared)
+		densityGain = math.Max(0, (raw-factored)/raw)
+	}
+	purity := 1.0
+	return clamp01((0.4 + densityGain) * purity)
+}
+
+func factorizationRationale(predicate string, role bridgeFactorRole, shared int64) string {
+	side := "targets"
+	if role == bridgeRoleTail {
+		side = "sources"
+	}
+	pred := strings.ToUpper(predicate)
+	return fmt.Sprintf("factorize predicate=%s role=%s: pair shares %d %s %s; what generalization G would subsume both and attach G to the shared %s, lowering global density?", pred, role, shared, pred, side, side)
 }
 
 func rowFloat(row map[string]any, key string) float64 {
