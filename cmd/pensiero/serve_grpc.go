@@ -147,6 +147,24 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 		if native, ok := reasoner.(*reasoning.NativeReasoner); ok {
 			native.SetEnforcePredicate(true)
 		}
+		if opts.ConditionalRules {
+			loadedRules, _, err := reasoning.LoadRulesFromGraph(ctx, pool)
+			if err != nil {
+				_ = pool.Close()
+				return nil, err
+			}
+			ruleSet, err := reasoning.CompileRules(loadedRules, reg)
+			if err != nil {
+				_ = pool.Close()
+				return nil, err
+			}
+			if ruleSet.Len() > 0 {
+				oracle := reasoning.NewGraphConditionOracle(pool, reasoner, reg, cfg)
+				reasoner = reasoning.NewConditionalReasoner(reasoner, oracle, ruleSet, reg, reasoning.ConditionalConfig{
+					Decay: cfg.Decay,
+				})
+			}
+		}
 		return &generation{
 			id:       newGenerationID(path),
 			pool:     pool,

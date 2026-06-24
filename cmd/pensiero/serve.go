@@ -64,6 +64,7 @@ type serveOptions struct {
 	MaxOpenTopics       int
 	Once                bool
 	ShowCognitionLabels bool
+	ConditionalRules    bool
 	DefaultTopic        string
 }
 
@@ -103,6 +104,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.RandomSampleLimit, "cognition-random-sample", opts.RandomSampleLimit, "bounded entity sample size for random cognition topics")
 	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
 	fs.BoolVar(&opts.ShowCognitionLabels, "cognition-show-labels", opts.ShowCognitionLabels, "include raw entity labels (not just hashes) in /thinking and /questions; default hashes-only for privacy")
+	fs.BoolVar(&opts.ConditionalRules, "conditional-rules", opts.ConditionalRules, "enable bounded backward-chaining over structured Rule nodes")
 	fs.IntVar(&opts.MaxOpenTopics, "max-open-topics", opts.MaxOpenTopics, "maximum lazily-open topic graphs for gRPC serving")
 	fs.IntVar(&opts.MinSupport, "min-support", opts.MinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
@@ -339,6 +341,7 @@ func defaultServeOptions() serveOptions {
 		RandomSampleLimit: envInt("PENSIERO_COGNITION_RANDOM_SAMPLE", defaultTopicRandomSampleLimit),
 		SemanticSample:    envInt("PENSIERO_COGNITION_SEMANTIC_SAMPLE", defaultTopicSemanticSample),
 		MaxOpenTopics:     envInt("PENSIERO_MAX_OPEN_TOPICS", defaultMaxOpenTopics),
+		ConditionalRules:  envBool("PENSIERO_CONDITIONAL_RULES", true),
 		DefaultTopic:      os.Getenv("PENSIERO_DEFAULT_TOPIC"),
 	}
 }
@@ -757,6 +760,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func countValue(value any) int64 {
