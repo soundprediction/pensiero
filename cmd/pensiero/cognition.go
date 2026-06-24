@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -334,6 +335,11 @@ func (e *ThoughtEngine) Execute(ctx context.Context, thought Thought) error {
 
 func (e *ThoughtEngine) emitQuestion(ctx context.Context, claim reasoning.Claim, rationale string, gain float64) error {
 	if e == nil || e.Questions == nil {
+		return ctx.Err()
+	}
+	// Never emit a tautology — a claim whose subject and object are the same
+	// entity ("does X present with X?") is trivially circular and unhelpful.
+	if strings.EqualFold(strings.TrimSpace(claim.Subject), strings.TrimSpace(claim.Object)) {
 		return ctx.Err()
 	}
 	return e.Questions.Emit(ctx, []reasoning.Question{{
