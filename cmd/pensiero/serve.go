@@ -17,24 +17,49 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/soundprediction/pensiero/pkg/connector"
 	"github.com/soundprediction/pensiero/pkg/generalization"
+	"github.com/soundprediction/pensiero/pkg/reasoning"
 )
 
 type serveOptions struct {
-	SourcePath       string
-	ScopesCSV        string
-	ScopesDir        string
-	OutDir           string
-	PredicateCSV     string
-	TaxonomicCSV     string
-	TaxonomicDir     string
-	RegistrySpec     string
-	HealthAddr       string
-	Interval         time.Duration
-	MinSupport       int
-	MinParentSupport int
-	MaxParentLevel   int
-	Once             bool
+	SourcePath        string
+	ScopesCSV         string
+	ScopesDir         string
+	OutDir            string
+	PredicateCSV      string
+	PredicatePacksCSV string
+	TypePacksCSV      string
+	TaxonomicCSV      string
+	TaxonomicDir      string
+	RegistrySpec      string
+	HealthAddr        string
+	GRPCAddr          string
+	Backend           string
+	ReasoningExt      string
+	EmbedderURL       string
+	EmbedderModel     string
+	GoldenFile        string
+	LeaderMode        string
+	Interval          time.Duration
+	IGLQuiet          time.Duration
+	IGLMinPublish     time.Duration
+	CognitionInterval time.Duration
+	CognitionWindow   time.Duration
+	CognitionThought  time.Duration
+	MinSupport        int
+	MinParentSupport  int
+	MaxParentLevel    int
+	GRPCPoolSize      int
+	InventorySample   int
+	CognitionMax      int
+	QueryHotWeight    int
+	RandomWeight      int
+	UnresolvedWeight  int
+	SemanticWeight    int
+	RandomSampleLimit int
+	SemanticSample    int
+	Once              bool
 }
 
 type scopeDescriptor struct {
@@ -58,29 +83,69 @@ func runServe(args []string) error {
 	fs.StringVar(&opts.ScopesDir, "scopes-dir", opts.ScopesDir, "directory of JSON scope descriptors")
 	fs.StringVar(&opts.OutDir, "out-dir", opts.OutDir, "published graph directory")
 	fs.DurationVar(&opts.Interval, "interval", opts.Interval, "IGL period")
+	fs.DurationVar(&opts.IGLQuiet, "igl-quiet", opts.IGLQuiet, "minimum query-idle time before an IGL pass")
+	fs.DurationVar(&opts.IGLMinPublish, "igl-min-publish", opts.IGLMinPublish, "minimum interval between successful IGL publishes")
+	fs.DurationVar(&opts.CognitionInterval, "cognition-interval", opts.CognitionInterval, "background cognition scheduler period")
+	fs.DurationVar(&opts.CognitionWindow, "cognition-window", opts.CognitionWindow, "maximum background cognition work per idle window")
+	fs.DurationVar(&opts.CognitionThought, "cognition-thought-budget", opts.CognitionThought, "maximum time budget for one background thought")
+	fs.IntVar(&opts.CognitionMax, "cognition-max-thoughts", opts.CognitionMax, "maximum background thoughts per idle window")
+	fs.IntVar(&opts.QueryHotWeight, "cognition-query-hot-weight", opts.QueryHotWeight, "fixed topic weight for hot query proof precompute")
+	fs.IntVar(&opts.RandomWeight, "cognition-random-weight", opts.RandomWeight, "fixed topic weight for random graph samples; minimum 1")
+	fs.IntVar(&opts.UnresolvedWeight, "cognition-unresolved-weight", opts.UnresolvedWeight, "fixed topic weight for unresolved contradiction checks")
+	fs.IntVar(&opts.SemanticWeight, "cognition-semantic-weight", opts.SemanticWeight, "fixed topic weight for embedder semantic neighbors")
+	fs.IntVar(&opts.RandomSampleLimit, "cognition-random-sample", opts.RandomSampleLimit, "bounded entity sample size for random cognition topics")
+	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
 	fs.IntVar(&opts.MinSupport, "min-support", opts.MinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
 	fs.IntVar(&opts.MaxParentLevel, "max-parent-level", opts.MaxParentLevel, "maximum parent depth to keep")
 	fs.StringVar(&opts.PredicateCSV, "predicates", opts.PredicateCSV, "comma-separated predicates; empty uses registry-derived predicates")
+	fs.StringVar(&opts.PredicatePacksCSV, "predicate-packs", opts.PredicatePacksCSV, "comma-separated predicate packs to extend the general registry")
+	fs.StringVar(&opts.TypePacksCSV, "type-packs", opts.TypePacksCSV, "comma-separated entity type packs for advisory registry validation")
 	fs.StringVar(&opts.TaxonomicCSV, "taxonomic-predicates", opts.TaxonomicCSV, "comma-separated hierarchy predicates")
 	fs.StringVar(&opts.TaxonomicDir, "taxonomic-direction", opts.TaxonomicDir, "hierarchy edge direction: child-to-parent or parent-to-child")
 	fs.StringVar(&opts.RegistrySpec, "registry", opts.RegistrySpec, "general or path to a registry JSON file")
 	fs.StringVar(&opts.HealthAddr, "health-addr", opts.HealthAddr, "health/metrics listen address; empty disables HTTP")
+	fs.StringVar(&opts.GRPCAddr, "grpc-addr", opts.GRPCAddr, "gRPC reasoning listen address; empty disables gRPC")
+	fs.IntVar(&opts.GRPCPoolSize, "grpc-pool-size", opts.GRPCPoolSize, "read-only graph handles for gRPC reasoning")
+	fs.IntVar(&opts.InventorySample, "inventory-sample", opts.InventorySample, "sampled predicate inventory row limit; 0 disables inventory")
+	fs.StringVar(&opts.Backend, "backend", opts.Backend, "gRPC reasoning backend: ladybug-native or symbolic-graph")
+	fs.StringVar(&opts.ReasoningExt, "reasoning-extension", opts.ReasoningExt, "reasoning extension path/name; empty loads reasoning by name")
+	fs.StringVar(&opts.EmbedderURL, "embedder-url", opts.EmbedderURL, "OpenAI-compatible /v1/embeddings base URL for optional semantic cognition; empty disables")
+	fs.StringVar(&opts.EmbedderModel, "embedder-model", opts.EmbedderModel, "embedding model name sent to the OpenAI-compatible embedder")
+	fs.StringVar(&opts.GoldenFile, "golden-file", opts.GoldenFile, "optional JSON golden claims for validating gRPC snapshot reloads")
+	fs.StringVar(&opts.LeaderMode, "leader-mode", opts.LeaderMode, "IGL leader election mode: flock, none, or k8s-lease")
 	fs.BoolVar(&opts.Once, "once", opts.Once, "run one IGL pass and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	opts.LeaderMode = normalizeLeaderMode(opts.LeaderMode)
 	if strings.TrimSpace(opts.SourcePath) == "" {
 		return fmt.Errorf("--source is required")
 	}
 	if strings.TrimSpace(opts.OutDir) == "" {
 		return fmt.Errorf("--out-dir is required")
 	}
+	if strings.TrimSpace(opts.GRPCAddr) != "" && opts.GRPCPoolSize <= 0 {
+		return fmt.Errorf("--grpc-pool-size must be positive")
+	}
+	if opts.Once && strings.TrimSpace(opts.GRPCAddr) != "" {
+		return fmt.Errorf("--once cannot be combined with --grpc-addr")
+	}
+	opts.Backend = strings.TrimSpace(opts.Backend)
+	if opts.Backend == "" {
+		return fmt.Errorf("--backend is required")
+	}
+	if opts.LeaderMode == leaderModeK8sLease {
+		return fmt.Errorf("--leader-mode=%s is not implemented yet", leaderModeK8sLease)
+	}
+	if opts.LeaderMode != leaderModeFlock && opts.LeaderMode != leaderModeNone {
+		return fmt.Errorf("unsupported --leader-mode %q (supported: %s, %s, %s)", opts.LeaderMode, leaderModeFlock, leaderModeNone, leaderModeK8sLease)
+	}
 	scopes, err := loadServeScopes(opts)
 	if err != nil {
 		return err
 	}
-	reg, err := loadRegistry(opts.RegistrySpec)
+	reg, _, err := loadRegistryWithTypePacks(opts.RegistrySpec, splitCSV(opts.PredicatePacksCSV), splitCSV(opts.TypePacksCSV))
 	if err != nil {
 		return err
 	}
@@ -92,9 +157,20 @@ func runServe(args []string) error {
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	metrics := generalization.NewMetrics()
+	loadTracker := NewLoadTracker(LoadTrackerConfig{})
+	questions := newQuestionStore(defaultQuestionLimit, logger)
+	unconfirmed := newUnconfirmedStore(defaultUnconfirmedLimit, logger)
+	thinking := newThinkingState(defaultThinkingRecentLimit)
+	inventory := newPredicateInventory(source, reg, PredicateInventoryConfig{
+		SampleLimit:     opts.InventorySample,
+		RefreshInterval: defaultPredicateInventoryInterval,
+		QuietFor:        opts.IGLQuiet,
+		Load:            loadTracker,
+		Logger:          logger,
+	})
 	loop := &generalization.Loop{
 		Publisher: &generalization.Publisher{
-			Source:   source,
+			Source:   loadAwareSource{inner: source, load: loadTracker},
 			Registry: reg,
 			Writer:   ladybugSnapshotWriter{},
 			Validate: validateLadybugSnapshot,
@@ -105,38 +181,153 @@ func runServe(args []string) error {
 		Interval: opts.Interval,
 		OutDir:   opts.OutDir,
 	}
+	var runner iglPassRunner = loop
+	var leader scopeLeader
+	var leaderScopeNames []string
+	if opts.LeaderMode != leaderModeNone {
+		leader, err = newLeaderForMode(opts.LeaderMode, opts.OutDir)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := leader.Close(); err != nil {
+				logger.Printf("leader election close error=%v", err)
+			}
+		}()
+		leaderScopeNames, err = leadershipScopeNames(scopes)
+		if err != nil {
+			return err
+		}
+		runner = newLeaderGatedIGLRunner(loop, leader, logger)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	grpcEnabled := strings.TrimSpace(opts.GRPCAddr) != ""
+	var reasoningTelemetry *queryTelemetry
+	if grpcEnabled {
+		reasoningTelemetry = newQueryTelemetry(defaultQueryTelemetryLimit)
+	}
+	readiness := newReadinessGate()
 	if opts.Once {
-		result, err := loop.RunOnce(ctx)
+		result, err := runner.RunOnce(ctx)
 		printPassResult(result)
 		return err
 	}
+	if !grpcEnabled {
+		readiness.MarkReady()
+	}
 	if strings.TrimSpace(opts.HealthAddr) != "" {
-		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, logger); err != nil {
+		if _, err := startHealthServer(ctx, opts.HealthAddr, metrics, reasoningTelemetry, readiness, inventory, questions, unconfirmed, thinking, logger); err != nil {
 			return err
 		}
 	}
-	return loop.Run(ctx)
+	if grpcEnabled {
+		grpcRuntime, err := startGRPCReasoningServer(ctx, opts, reg, reasoningTelemetry, loadTracker, readiness, logger)
+		if err != nil {
+			return err
+		}
+		defer grpcRuntime.Close(logger)
+		startCognitionWorker(ctx, opts, grpcRuntime, reasoningTelemetry, loadTracker, reg, questions, unconfirmed, thinking, logger)
+	}
+	inventory.Start(ctx)
+	scheduler := NewIGLScheduler(runner, loadTracker, IGLSchedulerConfig{
+		BaseInterval:       opts.Interval,
+		QuietFor:           opts.IGLQuiet,
+		MinPublishInterval: opts.IGLMinPublish,
+		Leader:             leader,
+		LeaderScopes:       leaderScopeNames,
+		Logger:             logger,
+	})
+	return runLowPriorityIGLWorker(ctx, scheduler.Run)
 }
 
 func defaultServeOptions() serveOptions {
 	return serveOptions{
-		SourcePath:       os.Getenv("PENSIERO_SOURCE"),
-		ScopesCSV:        os.Getenv("PENSIERO_SCOPES"),
-		ScopesDir:        os.Getenv("PENSIERO_SCOPES_DIR"),
-		OutDir:           os.Getenv("PENSIERO_OUT_DIR"),
-		PredicateCSV:     os.Getenv("PENSIERO_PREDICATES"),
-		TaxonomicCSV:     os.Getenv("PENSIERO_TAXONOMIC_PREDICATES"),
-		TaxonomicDir:     firstEnv("PENSIERO_TAXONOMIC_DIRECTION", string(generalization.TaxonomicDirectionChildToParent)),
-		RegistrySpec:     firstEnv("PENSIERO_REGISTRY", "general"),
-		HealthAddr:       firstEnv("PENSIERO_HEALTH_ADDR", "127.0.0.1:8080"),
-		Interval:         envDuration("PENSIERO_INTERVAL", time.Minute),
-		MinSupport:       envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
-		MinParentSupport: envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
-		MaxParentLevel:   envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),
+		SourcePath:        os.Getenv("PENSIERO_SOURCE"),
+		ScopesCSV:         os.Getenv("PENSIERO_SCOPES"),
+		ScopesDir:         os.Getenv("PENSIERO_SCOPES_DIR"),
+		OutDir:            os.Getenv("PENSIERO_OUT_DIR"),
+		PredicateCSV:      os.Getenv("PENSIERO_PREDICATES"),
+		PredicatePacksCSV: os.Getenv("PENSIERO_PREDICATE_PACKS"),
+		TypePacksCSV:      os.Getenv("PENSIERO_TYPE_PACKS"),
+		TaxonomicCSV:      os.Getenv("PENSIERO_TAXONOMIC_PREDICATES"),
+		TaxonomicDir:      firstEnv("PENSIERO_TAXONOMIC_DIRECTION", string(generalization.TaxonomicDirectionChildToParent)),
+		RegistrySpec:      firstEnv("PENSIERO_REGISTRY", "general"),
+		HealthAddr:        firstEnv("PENSIERO_HEALTH_ADDR", "127.0.0.1:8080"),
+		GRPCAddr:          os.Getenv("PENSIERO_GRPC_ADDR"),
+		Backend:           reasoning.NativeBackendName,
+		ReasoningExt:      os.Getenv("PENSIERO_REASONING_EXTENSION"),
+		EmbedderURL:       os.Getenv("PENSIERO_EMBEDDER_URL"),
+		EmbedderModel:     firstEnv("PENSIERO_EMBEDDER_MODEL", connector.DefaultEmbeddingModel),
+		GoldenFile:        os.Getenv("PENSIERO_GOLDEN_FILE"),
+		LeaderMode:        firstEnv("PENSIERO_LEADER_MODE", leaderModeFlock),
+		Interval:          envDuration("PENSIERO_INTERVAL", time.Minute),
+		IGLQuiet:          envDuration("PENSIERO_IGL_QUIET", defaultIGLQuiet),
+		IGLMinPublish:     envDuration("PENSIERO_IGL_MIN_PUBLISH", defaultIGLMinPublish),
+		CognitionInterval: envDuration("PENSIERO_COGNITION_INTERVAL", defaultCognitionInterval),
+		CognitionWindow:   envDuration("PENSIERO_COGNITION_WINDOW", defaultCognitionWindowBudget),
+		CognitionThought:  envDuration("PENSIERO_COGNITION_THOUGHT_BUDGET", defaultCognitionThoughtTimeout),
+		MinSupport:        envInt("PENSIERO_MIN_SUPPORT", generalization.DefaultMinSupport),
+		MinParentSupport:  envInt("PENSIERO_MIN_PARENT_SUPPORT", 1),
+		MaxParentLevel:    envInt("PENSIERO_MAX_PARENT_LEVEL", generalization.DefaultMaxParentLevel),
+		GRPCPoolSize:      envInt("PENSIERO_GRPC_POOL_SIZE", defaultGRPCPoolSize),
+		InventorySample:   envInt("PENSIERO_INVENTORY_SAMPLE", defaultPredicateInventorySample),
+		CognitionMax:      envInt("PENSIERO_COGNITION_MAX_THOUGHTS", defaultCognitionMaxThoughts),
+		QueryHotWeight:    envInt("PENSIERO_COGNITION_QUERY_HOT_WEIGHT", 3),
+		RandomWeight:      envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 1),
+		UnresolvedWeight:  envInt("PENSIERO_COGNITION_UNRESOLVED_WEIGHT", 2),
+		SemanticWeight:    envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
+		RandomSampleLimit: envInt("PENSIERO_COGNITION_RANDOM_SAMPLE", defaultTopicRandomSampleLimit),
+		SemanticSample:    envInt("PENSIERO_COGNITION_SEMANTIC_SAMPLE", defaultTopicSemanticSample),
 	}
+}
+
+func startCognitionWorker(ctx context.Context, opts serveOptions, runtime *grpcReasoningRuntime, telemetry *queryTelemetry, load *LoadTracker, reg *reasoning.PredicateRegistry, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState, logger *log.Logger) {
+	if runtime == nil || runtime.store == nil || runtime.cache == nil {
+		return
+	}
+	var embedder cognitionEmbedder
+	if strings.TrimSpace(opts.EmbedderURL) != "" {
+		embedder = connector.NewOpenAIEmbedder(connector.EmbedderConfig{
+			BaseURL:     opts.EmbedderURL,
+			Model:       opts.EmbedderModel,
+			MinInterval: 100 * time.Millisecond,
+		})
+		if logger != nil {
+			logger.Printf("embedder url=%s model=%s", strings.TrimRight(opts.EmbedderURL, "/"), opts.EmbedderModel)
+		}
+	}
+	selector := NewTopicSelector(runtime.store, telemetry, reg, embedder, TopicSelectorConfig{
+		QueryHotWeight:    opts.QueryHotWeight,
+		RandomWeight:      opts.RandomWeight,
+		UnresolvedWeight:  opts.UnresolvedWeight,
+		SemanticWeight:    opts.SemanticWeight,
+		HotKeyLimit:       defaultTopicHotKeyLimit,
+		RandomSampleLimit: opts.RandomSampleLimit,
+		SemanticSample:    opts.SemanticSample,
+	})
+	thinking.SetSourceWeights(selector.SourceWeights())
+	engine := &ThoughtEngine{
+		Reasoner:    runtime.cache,
+		Questions:   questions,
+		Unconfirmed: unconfirmed,
+		Logger:      logger,
+	}
+	scheduler := NewCognitionScheduler(selector, engine, load, CognitionSchedulerConfig{
+		BaseInterval:  opts.CognitionInterval,
+		QuietFor:      opts.IGLQuiet,
+		WindowBudget:  opts.CognitionWindow,
+		ThoughtBudget: opts.CognitionThought,
+		MaxThoughts:   opts.CognitionMax,
+		Logger:        logger,
+		Thinking:      thinking,
+	})
+	go func() {
+		if err := runLowPriorityIGLWorker(ctx, scheduler.Run); err != nil && ctx.Err() == nil && logger != nil {
+			logger.Printf("cognition scheduler error=%v", err)
+		}
+	}()
 }
 
 func flagSet(name string) *flag.FlagSet {
@@ -302,27 +493,8 @@ func scopeFromDescriptor(dir string, fileName string, desc scopeDescriptor, base
 	return generalization.Scope{Name: name, Config: cfg}, nil
 }
 
-func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, logger *log.Logger) (*http.Server, error) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		snapshot := metrics.Snapshot()
-		lastErr := lastMetricsError(snapshot)
-		status := "ok"
-		code := http.StatusOK
-		if lastErr != "" {
-			status = "degraded"
-			code = http.StatusServiceUnavailable
-		}
-		writeJSON(w, code, map[string]any{
-			"status":     status,
-			"last_error": lastErr,
-			"passes":     snapshot.Passes,
-			"scopes":     snapshot.Scopes,
-		})
-	})
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, metrics.Snapshot())
-	})
+func startHealthServer(ctx context.Context, addr string, metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState, logger *log.Logger) (*http.Server, error) {
+	mux := healthHandler(metrics, reasoningTelemetry, readiness, inventory, questions, unconfirmed, thinking)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("health listen: %w", err)
@@ -344,6 +516,74 @@ func startHealthServer(ctx context.Context, addr string, metrics *generalization
 		}
 	}()
 	return server, nil
+}
+
+func healthHandler(metrics *generalization.Metrics, reasoningTelemetry *queryTelemetry, readiness *readinessGate, inventory *predicateInventory, questions *questionStore, unconfirmed *unconfirmedStore, thinking *thinkingState) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		snapshot := metrics.Snapshot()
+		querySnapshot := reasoningTelemetry.Snapshot()
+		lastErr := lastMetricsError(snapshot)
+		status := "ok"
+		code := http.StatusOK
+		if !readiness.Ready() {
+			status = "starting"
+			code = http.StatusServiceUnavailable
+		} else if lastErr != "" {
+			status = "degraded"
+			code = http.StatusServiceUnavailable
+		}
+		writeJSON(w, code, map[string]any{
+			"status":     status,
+			"last_error": lastErr,
+			"passes":     snapshot.Passes,
+			"scopes":     snapshot.Scopes,
+			"reasoning": map[string]any{
+				"cache_hit_ratio": querySnapshot.CacheHitRatio,
+				"total":           querySnapshot.Total,
+				"timeouts":        querySnapshot.Timeouts,
+			},
+		})
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		snapshot := metrics.Snapshot()
+		payload := map[string]any{
+			"started_at": snapshot.StartedAt,
+			"last_pass":  snapshot.LastPass,
+			"scopes":     snapshot.Scopes,
+			"passes":     snapshot.Passes,
+		}
+		if reasoningTelemetry != nil {
+			payload["reasoning"] = reasoningTelemetry.Snapshot()
+			payload["reasoning_hot_keys"] = reasoningTelemetry.HotKeys(10)
+		}
+		writeJSON(w, http.StatusOK, payload)
+	})
+	mux.HandleFunc("/inventory", func(w http.ResponseWriter, r *http.Request) {
+		if inventory == nil {
+			writeJSON(w, http.StatusOK, PredicateInventorySnapshot{})
+			return
+		}
+		writeJSON(w, http.StatusOK, inventory.Snapshot())
+	})
+	mux.HandleFunc("/questions", func(w http.ResponseWriter, r *http.Request) {
+		if questions == nil {
+			writeJSON(w, http.StatusOK, QuestionSnapshot{})
+			return
+		}
+		writeJSON(w, http.StatusOK, questions.Snapshot())
+	})
+	mux.HandleFunc("/unconfirmed", func(w http.ResponseWriter, r *http.Request) {
+		if unconfirmed == nil {
+			writeJSON(w, http.StatusOK, UnconfirmedSnapshot{})
+			return
+		}
+		writeJSON(w, http.StatusOK, unconfirmed.Snapshot())
+	})
+	mux.HandleFunc("/thinking", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, thinking.Snapshot(questions.Count(), unconfirmed.Count()))
+	})
+	return mux
 }
 
 func writeJSON(w http.ResponseWriter, code int, value any) {

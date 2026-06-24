@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/soundprediction/pensiero/pkg/db"
+	"github.com/soundprediction/pensiero/pkg/models"
 )
 
 type mockCozo struct {
@@ -21,8 +20,7 @@ func (m *mockCozo) Run(query string, params map[string]interface{}) (interface{}
 func (m *mockCozo) Close() {}
 
 func TestIngestFromPredicato(t *testing.T) {
-	// Mock Predicato server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/extract" {
 			t.Errorf("Expected path /api/v1/extract, got %s", r.URL.Path)
 		}
@@ -45,41 +43,40 @@ func TestIngestFromPredicato(t *testing.T) {
 			},
 		}
 		json.NewEncoder(w).Encode(result)
-	}))
-	defer server.Close()
+	})
 
-	// Mock CozoDB and Repository - this is a bit involved due to the embedded CGO dependency.
-	// For this test, we'll try to use a real In-Memory CozoDB if possible,
-	// or we will just test the mapping logic if we can decouple it.
-
-	// Since pensiero has cozo-lib-go dependency, let's try to use it with 'mem' engine if it works in this env.
-	client, err := db.NewClient("mem", "", nil)
-	if err != nil {
-		t.Skip("Skipping test: CozoDB 'mem' engine not available in test environment", err)
-		return
-	}
-	defer client.Close()
-
-	err = client.InitSchema()
-	if err != nil {
-		t.Fatalf("Failed to init schema: %v", err)
+	repo := &fakePredicatoRepository{}
+	connector := NewPredicatoClient("http://predicato.test")
+	connector.HTTPClient = &http.Client{
+		Transport: handlerRoundTripper{handler: handler},
 	}
 
-	repo := db.NewRepository(client)
-	connector := NewPredicatoClient(server.URL)
-
-	err = connector.IngestFromPredicato(context.Background(), repo, "John is a friend of Jane. Humans are mortal.")
-	if err != nil {
+	if err := connector.IngestFromPredicato(context.Background(), repo, "John is a friend of Jane. Humans are mortal."); err != nil {
 		t.Fatalf("IngestFromPredicato failed: %v", err)
 	}
 
-	// Verify triples
-	// Since ID is random-ish (timestamp), let's list all edges
-	edges, err := repo.ListEdgesBySource("John")
-	if err != nil || len(edges) == 0 {
-		t.Fatalf("Expected to find edge for John, got %v", err)
+	if len(repo.edges) != 1 {
+		t.Fatalf("edges=%d, want 1", len(repo.edges))
 	}
-	if edges[0].Target != "Jane" || edges[0].Predicate != "friend_of" {
-		t.Errorf("Edge mismatch: %+v", edges[0])
+	if repo.edges[0].Source != "John" || repo.edges[0].Target != "Jane" || repo.edges[0].Predicate != "friend_of" {
+		t.Errorf("edge mismatch: %+v", repo.edges[0])
 	}
+	if len(repo.meta) != 1 || repo.meta[0].Head != "mortal(X)" {
+		t.Fatalf("meta relations=%#v, want mortal rule", repo.meta)
+	}
+}
+
+type fakePredicatoRepository struct {
+	edges []*models.EpistemicEdge
+	meta  []*models.MetaRelation
+}
+
+func (r *fakePredicatoRepository) SaveEdge(edge *models.EpistemicEdge) error {
+	r.edges = append(r.edges, edge)
+	return nil
+}
+
+func (r *fakePredicatoRepository) SaveMetaRelation(meta *models.MetaRelation) error {
+	r.meta = append(r.meta, meta)
+	return nil
 }

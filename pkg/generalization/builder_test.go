@@ -2,7 +2,10 @@ package generalization
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/soundprediction/pensiero/pkg/reasoning"
@@ -142,6 +145,28 @@ func TestTaxonomyCypherUsesDirectOneHopLadybugSyntax(t *testing.T) {
 	parentToChildQuery := taxonomyCypher(TaxonomicDirectionParentToChild)
 	if !strings.Contains(parentToChildQuery, "MATCH (parent:Entity)-[:RELATES_TO]->(rel:RelatesToNode_)-[:RELATES_TO]->(child:Entity)") {
 		t.Fatalf("parent-to-child taxonomy query has wrong edge direction: %s", parentToChildQuery)
+	}
+}
+
+func TestBuildHonorsContextCancellationBetweenTaxonomyChunks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	src := &cancelAfterFirstTaxonomyQuerySource{cancel: cancel}
+	entities := make([]string, taxonomyQueryChunkSize+1)
+	for i := range entities {
+		entities[i] = fmt.Sprintf("E%d", i)
+	}
+	_, err := Build(ctx, src, testRegistry(), Config{
+		ScopeEntities:    entities,
+		Predicates:       []string{"R"},
+		MaxParentLevel:   1,
+		MinParentSupport: 1,
+		MinSupport:       1,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Build error=%v, want context canceled", err)
+	}
+	if got := src.TaxonomyCalls(); got != 1 {
+		t.Fatalf("taxonomy calls=%d, want 1", got)
 	}
 }
 
@@ -349,6 +374,25 @@ func (f fakeSource) Query(_ context.Context, query string, params map[string]any
 	default:
 		return nil, nil
 	}
+}
+
+type cancelAfterFirstTaxonomyQuerySource struct {
+	cancel context.CancelFunc
+	calls  atomic.Int64
+}
+
+func (s *cancelAfterFirstTaxonomyQuerySource) Query(_ context.Context, _ string, params map[string]any) ([]map[string]any, error) {
+	if hasParam(params, "taxonomic") {
+		if s.calls.Add(1) == 1 {
+			s.cancel()
+		}
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func (s *cancelAfterFirstTaxonomyQuerySource) TaxonomyCalls() int64 {
+	return s.calls.Load()
 }
 
 type parentChildEdge struct {

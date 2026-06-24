@@ -13,7 +13,7 @@ import (
 // Per matched path it returns the ordered predicate names (the RelatesToNode_
 // nodes — those with no Entity label), their ids and confidences, the reached
 // target, and the logical hop count.
-func compositionCypher(req DeriveRequest) string {
+func compositionCypher(req DeriveRequest, excludeDeduced bool) string {
 	physMax := 2 * req.MaxHops
 	if physMax < 2 {
 		physMax = 2
@@ -30,6 +30,9 @@ func compositionCypher(req DeriveRequest) string {
 	w.WriteString("WHERE b.uuid <> a.uuid\n")
 	// keep the search in the clinical subgraph: drop molecular intermediates
 	w.WriteString("  AND none(n IN nodes(p) WHERE 'GENE' IN coalesce(n.labels,[]) OR 'PROTEIN' IN coalesce(n.labels,[]))\n")
+	if excludeDeduced {
+		w.WriteString("  AND none(n IN nodes(p) WHERE size(coalesce(n.labels,[])) = 0 AND lower(coalesce(n.status,'')) IN ['deduced','speculative'])\n")
+	}
 	if len(req.Preds) > 0 {
 		// every predicate node along the path must be one of $preds (transitive closure)
 		w.WriteString("  AND all(n IN nodes(p) WHERE size(coalesce(n.labels,[])) > 0 OR n.name IN $preds)\n")

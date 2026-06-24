@@ -49,36 +49,21 @@ var generalAliases = map[string]string{
 	"depends on": "depends_on", "precedes": "precedes",
 }
 
+func init() {
+	RegisterPack(PredicatePack{
+		Name:         "general",
+		Predicates:   generalPredicates,
+		Compositions: generalCompositions,
+		Aliases:      generalAliases,
+	})
+}
+
 // DefaultGeneralRegistry returns ONLY the general predicate primitives — a reusable
 // base usable directly as-is, or extended by a caller registry.
 func DefaultGeneralRegistry() *PredicateRegistry {
-	return buildRegistry(generalPredicates, generalAliases, generalCompositions, nil)
-}
-
-// buildRegistry assembles a registry from canonical predicate metas, raw->canonical
-// aliases (each alias inheriting the canonical's characteristics/inverse/super-
-// properties), composition rules, and disjoint pairs. Shared by the general and
-// domain registries.
-func buildRegistry(preds []PredicateMeta, aliases map[string]string,
-	comps []CompositionRule, disjoint []DisjointPair) *PredicateRegistry {
-	byCanon := map[string]PredicateMeta{}
-	metas := make([]PredicateMeta, 0, len(preds)+len(aliases))
-	for _, p := range preds {
-		if p.Raw == "" {
-			p.Raw = p.Canonical
-		}
-		byCanon[normKey(p.Canonical)] = p
-		metas = append(metas, p)
+	reg, err := BuildRegistry([]string{"general"})
+	if err != nil {
+		panic(err)
 	}
-	for raw, canon := range aliases {
-		base := byCanon[normKey(canon)]
-		metas = append(metas, PredicateMeta{
-			Raw:           raw,
-			Canonical:     canon,
-			Chars:         base.Chars,
-			InverseOf:     base.InverseOf,
-			SubPropertyOf: base.SubPropertyOf,
-		})
-	}
-	return NewPredicateRegistry(metas, comps, disjoint)
+	return reg
 }

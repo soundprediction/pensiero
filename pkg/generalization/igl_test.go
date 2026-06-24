@@ -147,6 +147,40 @@ func TestShutdownRemovesTempSnapshot(t *testing.T) {
 	}
 }
 
+func TestPublishDoesNotPromoteSnapshotAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	outDir := t.TempDir()
+	finalPath, err := SnapshotPath(outDir, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(finalPath, []byte(`{"version":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := filepath.Join(outDir, ".alpha.cancel.tmp")
+	publisher := testPublisher(&cancelAfterWriteFileWriter{cancel: cancel})
+	publisher.Validate = nil
+	publisher.TempPath = func(string) string { return tmpPath }
+
+	result, err := publisher.Publish(ctx, outDir, testScope("alpha"), nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+	if result.Published {
+		t.Fatalf("snapshot published despite cancellation: %#v", result)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"version":"old"}` {
+		t.Fatalf("final snapshot changed after cancellation: %s", data)
+	}
+	if _, err := os.Stat(tmpPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp path err=%v, want not exist", err)
+	}
+}
+
 func testLoop(outDir string, writer SnapshotWriter) *Loop {
 	return &Loop{
 		Publisher: testPublisher(writer),
@@ -254,6 +288,18 @@ func (w *cancelWriter) Write(ctx context.Context, path string, _ string, _ *Grap
 	w.once.Do(func() { close(w.started) })
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+type cancelAfterWriteFileWriter struct {
+	cancel context.CancelFunc
+}
+
+func (w *cancelAfterWriteFileWriter) Write(_ context.Context, path string, scope string, graph *Graph) error {
+	if err := writeSnapshotFile(path, scope, graph); err != nil {
+		return err
+	}
+	w.cancel()
+	return nil
 }
 
 type discardLogger struct{}

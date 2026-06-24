@@ -51,6 +51,7 @@ type Proof struct {
 type DeriveRequest struct {
 	Source         string
 	Target         string   // empty => any reachable target
+	Predicate      string   // optional canonical target predicate: keep proofs whose effective predicate entails it
 	Preds          []string // optional: restrict intermediate predicates (canonical)
 	MaxHops        int      // logical hops (physical depth is 2x in the reified model)
 	Decay          float64  // per-hop confidence decay (0,1]
@@ -69,12 +70,21 @@ type EntailResult struct {
 
 // Config holds engine defaults; zero values are replaced by sensible defaults.
 type Config struct {
-	MaxHops        int     // default 4
-	Decay          float64 // default 0.9
-	MinConf        float64 // default 0.05
-	Limit          int     // default 8
-	TauHigh        float64 // confidence at/above which Entails passes without deferring (default 0.6)
-	ExcludeDeduced bool    // exclude status='deduced' edges to avoid circular self-support (default true)
+	MaxHops           int     // default 4
+	Decay             float64 // default 0.9
+	MinConf           float64 // default 0.05
+	Limit             int     // default 8
+	TauHigh           float64 // confidence at/above which Entails passes without deferring (default 0.6)
+	ExcludeDeduced    bool    // exclude status='deduced' edges when the graph schema supports it (default true)
+	excludeDeducedSet bool
+}
+
+// WithExcludeDeduced explicitly controls provenance quarantine. Config{} and
+// custom configs that do not call this helper exclude deduced/speculative edges.
+func (c Config) WithExcludeDeduced(exclude bool) Config {
+	c.ExcludeDeduced = exclude
+	c.excludeDeducedSet = true
+	return c
 }
 
 func (c Config) withDefaults() Config {
@@ -92,6 +102,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.TauHigh <= 0 {
 		c.TauHigh = 0.6
+	}
+	if !c.excludeDeducedSet && !c.ExcludeDeduced {
+		c.ExcludeDeduced = true
 	}
 	return c
 }

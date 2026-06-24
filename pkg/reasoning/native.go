@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -24,16 +25,30 @@ func init() {
 // over a GraphQuerier (the go-predicato ladybug driver adapter). The extension
 // must be loaded in the session (LOAD EXTENSION 'reasoning'); EnsureLoaded does it.
 type NativeReasoner struct {
-	g   GraphQuerier
-	reg *PredicateRegistry
-	cfg Config
+	g                   GraphQuerier
+	reg                 *PredicateRegistry
+	cfg                 Config
+	hasProvenanceStatus bool
+	EnforcePredicate    bool
 }
 
 func NewNativeReasoner(g GraphQuerier, reg *PredicateRegistry, cfg Config) *NativeReasoner {
-	return &NativeReasoner{g: g, reg: reg, cfg: cfg.withDefaults()}
+	return &NativeReasoner{
+		g:                   g,
+		reg:                 reg,
+		cfg:                 cfg.withDefaults(),
+		hasProvenanceStatus: probeProvenanceStatus(context.Background(), g),
+	}
 }
 
 func (n *NativeReasoner) Name() string { return NativeBackendName }
+
+// SetEnforcePredicate opts the native backend into passing an accepted-predicate
+// set to REASON_ENTAILS. The zero value is false for legacy path-existence calls.
+func (n *NativeReasoner) SetEnforcePredicate(enforce bool) *NativeReasoner {
+	n.EnforcePredicate = enforce
+	return n
+}
 
 // EnsureLoaded loads the reasoning extension into the current session (idempotent
 // at the driver level). Call once per connection before reasoning.
@@ -42,16 +57,32 @@ func (n *NativeReasoner) EnsureLoaded(ctx context.Context) error {
 	return err
 }
 
-// Entails calls CALL REASON_ENTAILS(subject, predicate, object, max_hops). A logical
-// contradiction — a conflicting KB edge between the same ordered pair — takes
-// precedence and short-circuits to VerdictContradicted.
+// Entails checks the native contradiction query first, then delegates path
+// support to REASON_ENTAILS. Provenance quarantine is opt-in at the native arity
+// level and only passed when RelatesToNode_.status exists.
 func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, error) {
 	if conflict, proof, err := n.Contradicts(ctx, c); err == nil && conflict {
 		return EntailResult{Verdict: VerdictContradicted, Confidence: 1.0, Best: proof}, nil
 	}
-	q := fmt.Sprintf(
-		"CALL REASON_ENTAILS(%s, %s, %s, %d) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
-		cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops)
+	accepted := ""
+	if n.EnforcePredicate {
+		accepted = encodeAcceptedPredicates(nativeAcceptedPredicates(n.reg, c.Predicate))
+	}
+	var q string
+	switch {
+	case n.excludeDeduced():
+		q = fmt.Sprintf(
+			"CALL REASON_ENTAILS(%s, %s, %s, %d, %s, true) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
+			cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops, cyStr(accepted))
+	case n.EnforcePredicate:
+		q = fmt.Sprintf(
+			"CALL REASON_ENTAILS(%s, %s, %s, %d, %s) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
+			cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops, cyStr(accepted))
+	default:
+		q = fmt.Sprintf(
+			"CALL REASON_ENTAILS(%s, %s, %s, %d) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
+			cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops)
+	}
 	rows, err := n.g.Query(ctx, q, nil)
 	if err != nil {
 		return EntailResult{}, fmt.Errorf("REASON_ENTAILS: %w", err)
@@ -73,13 +104,63 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 	return res, nil
 }
 
-// Derive calls CALL REASON_DERIVE(source, target, max_hops, min_conf).
+func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string {
+	target := canonicalPredicate(reg, predicate)
+	seen := map[string]bool{}
+	var out []string
+	add := func(pred string) {
+		pred = canonicalPredicate(reg, pred)
+		key := normKey(pred)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, pred)
+	}
+	for _, pred := range predicatesEntailing(reg, target) {
+		add(pred)
+	}
+	if inverse, ok := reg.Inverse(target); ok {
+		for _, pred := range predicatesEntailing(reg, inverse) {
+			add(pred)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return normKey(out[i]) < normKey(out[j])
+	})
+	return out
+}
+
+func encodeAcceptedPredicates(preds []string) string {
+	var b strings.Builder
+	for i, pred := range preds {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		for _, r := range pred {
+			if r == '\\' || r == ',' {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// Derive delegates to REASON_DERIVE. Provenance quarantine is passed as a
+// trailing opt-in flag only when enabled and supported by the graph schema.
 func (n *NativeReasoner) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error) {
 	req = n.applyDefaults(req)
 	q := fmt.Sprintf(
 		"CALL REASON_DERIVE(%s, %s, %d, %g) YIELD target, confidence, hops, proof "+
 			"RETURN target, confidence, hops, proof ORDER BY confidence DESC LIMIT %d",
 		cyStr(req.Source), cyStr(req.Target), req.MaxHops, req.MinConf, req.Limit)
+	if n.excludeDeduced() {
+		q = fmt.Sprintf(
+			"CALL REASON_DERIVE(%s, %s, %d, %g, true) YIELD target, confidence, hops, proof "+
+				"RETURN target, confidence, hops, proof ORDER BY confidence DESC LIMIT %d",
+			cyStr(req.Source), cyStr(req.Target), req.MaxHops, req.MinConf, req.Limit)
+	}
 	rows, err := n.g.Query(ctx, q, nil)
 	if err != nil {
 		return nil, fmt.Errorf("REASON_DERIVE: %w", err)
@@ -127,8 +208,12 @@ func (n *NativeReasoner) Contradicts(ctx context.Context, c Claim) (bool, *Proof
 	// drug still fires — conservative on the safe side for contraindications.
 	obj := strings.ToLower(strings.TrimSpace(c.Object))
 	base := baseName(obj)
-	const q = `MATCH (s:Entity)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(o:Entity)
-		WHERE lower(s.name) = $s AND (lower(o.name) = $o OR lower(o.name) = $base OR lower(o.name) STARTS WITH $basesp) AND lower(r.name) IN $preds
+	q := `MATCH (s:Entity)-[:RELATES_TO]->(r:RelatesToNode_)-[:RELATES_TO]->(o:Entity)
+		WHERE lower(s.name) = $s AND (lower(o.name) = $o OR lower(o.name) = $base OR lower(o.name) STARTS WITH $basesp) AND lower(r.name) IN $preds`
+	if n.excludeDeduced() {
+		q += ` AND lower(coalesce(r.status,'')) NOT IN ['deduced','speculative']`
+	}
+	q += `
 		RETURN r.name AS pred, o.name AS obj LIMIT 1`
 	rows, err := n.g.Query(ctx, q, map[string]any{
 		"s":      strings.ToLower(strings.TrimSpace(c.Subject)),
@@ -156,6 +241,10 @@ func (n *NativeReasoner) Contradicts(ctx context.Context, c Claim) (bool, *Proof
 		Steps:     []ProofStep{{Source: c.Subject, Predicate: conflictPred, Target: target}},
 	}
 	return true, proof, nil
+}
+
+func (n *NativeReasoner) excludeDeduced() bool {
+	return n.cfg.ExcludeDeduced && n.hasProvenanceStatus
 }
 
 // baseName strips a trailing dosage/variant qualifier (trailing purely-numeric

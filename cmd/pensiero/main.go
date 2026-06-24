@@ -45,7 +45,7 @@ func run(args []string) error {
 func runBuildGeneralization(args []string) error {
 	fs := flag.NewFlagSet("build-generalization", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var sourcePath, scope, scopeFile, outPath, predicateCSV, taxonomicCSV, taxonomicDirection, registrySpec string
+	var sourcePath, scope, scopeFile, outPath, predicateCSV, predicatePacksCSV, typePacksCSV, taxonomicCSV, taxonomicDirection, registrySpec string
 	var minSupport, maxParentLevel int
 	fs.StringVar(&sourcePath, "source", "", "source graph path")
 	fs.StringVar(&scope, "scope", "", "scope name")
@@ -54,6 +54,8 @@ func runBuildGeneralization(args []string) error {
 	fs.IntVar(&minSupport, "min-support", generalization.DefaultMinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&maxParentLevel, "max-parent-level", generalization.DefaultMaxParentLevel, "maximum parent depth to keep")
 	fs.StringVar(&predicateCSV, "predicates", "", "comma-separated predicates; empty uses registry-derived predicates")
+	fs.StringVar(&predicatePacksCSV, "predicate-packs", "", "comma-separated predicate packs to extend the general registry")
+	fs.StringVar(&typePacksCSV, "type-packs", "", "comma-separated entity type packs for advisory registry validation")
 	fs.StringVar(&taxonomicCSV, "taxonomic-predicates", "", "comma-separated hierarchy predicates; empty uses registry-derived predicates")
 	fs.StringVar(&taxonomicDirection, "taxonomic-direction", string(generalization.TaxonomicDirectionChildToParent), "hierarchy edge direction: child-to-parent or parent-to-child")
 	fs.StringVar(&registrySpec, "registry", "general", "general or path to a registry JSON file")
@@ -77,7 +79,7 @@ func runBuildGeneralization(args []string) error {
 	if err != nil {
 		return err
 	}
-	reg, err := loadRegistry(registrySpec)
+	reg, _, err := loadRegistryWithTypePacks(registrySpec, splitCSV(predicatePacksCSV), splitCSV(typePacksCSV))
 	if err != nil {
 		return err
 	}
@@ -147,7 +149,7 @@ func runBuildGeneralization(args []string) error {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--once]")
+	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--type-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--igl-quiet 3s] [--igl-min-publish 30s] [--leader-mode flock|none|k8s-lease] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path] [--golden-file file] [--predicate-packs list] [--type-packs list] [--inventory-sample n]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
 }
 
 func readScopeEntities(path string) ([]string, error) {

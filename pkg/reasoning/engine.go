@@ -13,14 +13,20 @@ import (
 // driver code — the GraphQuerier abstracts the graph — so it is pure Go and
 // unit-testable with a mock.
 type Engine struct {
-	g   GraphQuerier
-	reg *PredicateRegistry
-	cfg Config
+	g                   GraphQuerier
+	reg                 *PredicateRegistry
+	cfg                 Config
+	hasProvenanceStatus bool
 }
 
 // NewEngine constructs the symbolic engine.
 func NewEngine(g GraphQuerier, reg *PredicateRegistry, cfg Config) *Engine {
-	return &Engine{g: g, reg: reg, cfg: cfg.withDefaults()}
+	return &Engine{
+		g:                   g,
+		reg:                 reg,
+		cfg:                 cfg.withDefaults(),
+		hasProvenanceStatus: probeProvenanceStatus(context.Background(), g),
+	}
 }
 
 // Name implements Reasoner.
@@ -37,11 +43,15 @@ func (e *Engine) Name() string { return BackendName }
 //	hops       int       // logical hops
 func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error) {
 	req = e.applyDefaults(req)
-	rows, err := e.g.Query(ctx, compositionCypher(req), compositionParams(req))
+	rows, err := e.g.Query(ctx, compositionCypher(req, e.excludeDeduced()), compositionParams(req))
 	if err != nil {
 		return nil, fmt.Errorf("reasoning.Derive: %w", err)
 	}
 	proofs := make([]Proof, 0, len(rows))
+	targetPred := ""
+	if req.Predicate != "" {
+		targetPred = canonicalPredicate(e.reg, req.Predicate)
+	}
 	for _, row := range rows {
 		p, ok := e.rowToProof(req.Source, row, req.IncludeInverse)
 		if !ok || p.Confidence < req.MinConf {
@@ -50,6 +60,13 @@ func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error)
 		if req.Target != "" && !sameEntity(p.Target, req.Target) {
 			continue
 		}
+		if targetPred != "" {
+			effective, ok := effectivePredicate(e.reg, p.Steps)
+			if !ok || !proofEntailsPredicate(e.reg, effective, targetPred, req.IncludeInverse) {
+				continue
+			}
+			p.Predicate = effective
+		}
 		proofs = append(proofs, p)
 	}
 	sort.SliceStable(proofs, func(i, j int) bool { return proofs[i].Confidence > proofs[j].Confidence })
@@ -57,6 +74,10 @@ func (e *Engine) Derive(ctx context.Context, req DeriveRequest) ([]Proof, error)
 		proofs = proofs[:req.Limit]
 	}
 	return proofs, nil
+}
+
+func (e *Engine) excludeDeduced() bool {
+	return e.cfg.ExcludeDeduced && e.hasProvenanceStatus
 }
 
 // Entails decides whether the claim is symbolically supported, contradicted, or
@@ -75,7 +96,7 @@ func (e *Engine) Entails(ctx context.Context, c Claim) (EntailResult, error) {
 	}
 
 	proofs, err := e.Derive(ctx, DeriveRequest{
-		Source: c.Subject, Target: c.Object, IncludeInverse: true,
+		Source: c.Subject, Target: c.Object, Predicate: canonicalPredicate(e.reg, c.Predicate), IncludeInverse: true,
 	})
 	if err != nil {
 		return EntailResult{}, err
@@ -190,10 +211,7 @@ func (e *Engine) rowToProof(source string, row map[string]any, includeInverse bo
 	if hops > 1 {
 		conf *= math.Pow(e.cfg.Decay, float64(hops-1))
 	}
-	pred := ""
-	if len(steps) > 0 {
-		pred = steps[len(steps)-1].Predicate
-	}
+	pred, _ := effectivePredicate(e.reg, steps)
 	return Proof{
 		Source:     source,
 		Target:     target,

@@ -9,9 +9,9 @@
 // with proof paths and Context-Monoid confidence).
 //
 // Registered functions (see reasoning_function.h):
-//   CALL REASON_ENTAILS(subject, predicate, object [, max_hops])
+//   CALL REASON_ENTAILS(subject, predicate, object [, max_hops [, accepted [, exclude_deduced]]])
 //        YIELD verdict, confidence, proof
-//   CALL REASON_DERIVE(source, target [, max_hops [, min_conf]])
+//   CALL REASON_DERIVE(source, target [, max_hops [, min_conf [, exclude_deduced]]])
 //        YIELD target, confidence, hops, proof
 //   CALL REASON_CONTRADICTS(subject, object) YIELD contradicted, proof
 namespace lbug {

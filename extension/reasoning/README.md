@@ -10,8 +10,17 @@ graph. It is the in-engine implementation of `../../SYMBOLIC_GRAPH_LOGIC.md`.
 CALL REASON_ENTAILS('fatigue', 'is a symptom of', 'hypothyroidism', 4)
   YIELD verdict, confidence, proof;          -- entailed | contradicted | unsupported
 
+CALL REASON_ENTAILS('fatigue', 'is a symptom of', 'hypothyroidism', 4, 'symptom_of,phenotype_of')
+  YIELD verdict, confidence, proof;          -- opt-in accepted-predicate guard
+
+CALL REASON_ENTAILS('fatigue', 'is a symptom of', 'hypothyroidism', 4, 'symptom_of,phenotype_of', true)
+  YIELD verdict, confidence, proof;          -- also exclude deduced/speculative predicate nodes
+
 CALL REASON_DERIVE('fatigue', 'hypothyroidism', 4, 0.05)
   YIELD target, confidence, hops, proof;     -- ranked multi-hop proof paths
+
+CALL REASON_DERIVE('fatigue', 'hypothyroidism', 4, 0.05, true)
+  YIELD target, confidence, hops, proof;     -- ranked paths with status quarantine
 
 CALL REASON_CONTRADICTS('patient_cond', 'hyperthyroidism')
   YIELD contradicted, proof;                 -- ontology-disjointness conflict
@@ -19,6 +28,12 @@ CALL REASON_CONTRADICTS('patient_cond', 'hyperthyroidism')
 
 `proof` is a JSON array of `{edge_id, rule, predicate, source, target, confidence}`
 steps; `confidence` is the Context-Monoid product with hop decay (see the spec).
+The 3- and 4-argument `REASON_ENTAILS` arities keep v1 path-existence semantics.
+The 5-argument arity accepts a comma-separated set of canonical predicates and
+only entails paths whose native effective predicate is in that set; sub-property
+and inverse closure must be computed by the caller and passed in. The trailing
+`exclude_deduced` flag is opt-in and removes paths containing `RelatesToNode_`
+predicate nodes with status `deduced` or `speculative`.
 
 ## Layout (mirrors the upstream `algo` extension)
 
