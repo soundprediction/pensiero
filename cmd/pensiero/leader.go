@@ -7,13 +7,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 const (
 	leaderModeFlock    = "flock"
 	leaderModeNone     = "none"
 	leaderModeK8sLease = "k8s-lease"
+)
+
+var (
+	errLeaderLockHeld         = errors.New("leader lock already held")
+	errLeaderFlockUnsupported = errors.New("flock leader election is not supported on this platform")
 )
 
 type scopeLeader interface {
@@ -39,6 +43,9 @@ func newLeaderElector(outDir string) (*leaderElector, error) {
 	outDir = strings.TrimSpace(outDir)
 	if outDir == "" {
 		return nil, fmt.Errorf("leader election: empty output dir")
+	}
+	if err := flockLeaderSupported(); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, fmt.Errorf("leader election: create output dir: %w", err)
@@ -66,13 +73,13 @@ func (e *leaderElector) TryAcquire(scope string) (bool, error) {
 		return true, nil
 	}
 	path := filepath.Join(e.outDir, name+".igl.lock")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_CLOEXEC, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return false, fmt.Errorf("leader election: open lock %s: %w", path, err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := tryLockLeaderFile(file); err != nil {
 		_ = file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		if errors.Is(err, errLeaderLockHeld) {
 			return false, nil
 		}
 		return false, fmt.Errorf("leader election: flock %s: %w", path, err)
@@ -137,7 +144,7 @@ func closeLeaderLock(lock *leaderLock) error {
 	if lock == nil || lock.file == nil {
 		return nil
 	}
-	unlockErr := syscall.Flock(int(lock.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockLeaderFile(lock.file)
 	closeErr := lock.file.Close()
 	if unlockErr != nil {
 		unlockErr = fmt.Errorf("leader election: unlock %s: %w", lock.path, unlockErr)
