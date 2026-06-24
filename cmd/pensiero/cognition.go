@@ -277,6 +277,7 @@ type ThoughtEngine struct {
 	Reasoner    reasoning.Reasoner
 	Questions   reasoning.QuestionSink
 	Unconfirmed *unconfirmedStore
+	Reg         *reasoning.PredicateRegistry
 	Logger      interface{ Printf(string, ...any) }
 }
 
@@ -337,8 +338,8 @@ func (e *ThoughtEngine) emitQuestion(ctx context.Context, claim reasoning.Claim,
 		return ctx.Err()
 	}
 	// Never emit a predicate-dependent tautology ("does X present with X?"); a
-	// self-loop on a reflexive-meaningful predicate (X interacts with X) is fine.
-	if isTautologyClaim(claim) {
+	// self-loop on a reflexive predicate (X interacts with X) is fine.
+	if isTautologyClaim(e.Reg, claim) {
 		return ctx.Err()
 	}
 	return e.Questions.Emit(ctx, []reasoning.Question{{

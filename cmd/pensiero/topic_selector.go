@@ -62,8 +62,8 @@ func NewTopicSelector(store generationAcquirer, telemetry *queryTelemetry, reg *
 	// mutexes. The selector keeps cfg.Random for its own pick order.
 	randomSource := newRandomThoughtSource(store, cfg.RandomSampleLimit, deriveRand(cfg.Random))
 	sources := []weightedThoughtSource{
-		{Weight: cfg.QueryHotWeight, Source: &queryHotThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
-		{Weight: cfg.UnresolvedWeight, Source: &unresolvedThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
+		{Weight: cfg.QueryHotWeight, Source: &queryHotThoughtSource{telemetry: telemetry, reg: reg, limit: cfg.HotKeyLimit}},
+		{Weight: cfg.UnresolvedWeight, Source: &unresolvedThoughtSource{telemetry: telemetry, reg: reg, limit: cfg.HotKeyLimit}},
 		{Weight: cfg.RandomWeight, Source: randomSource},
 		{Weight: cfg.BridgeWeight, Source: newBridgeThoughtSource(store, cfg.RandomSampleLimit, deriveRand(cfg.Random))},
 	}
@@ -236,6 +236,7 @@ func (s *TopicSelector) SourceWeights() map[string]int {
 type queryHotThoughtSource struct {
 	mu        sync.Mutex
 	telemetry *queryTelemetry
+	reg       *reasoning.PredicateRegistry
 	limit     int
 	next      int
 }
@@ -257,7 +258,7 @@ func (s *queryHotThoughtSource) Next(ctx context.Context) (Thought, bool, error)
 	for i := 0; i < len(keys); i++ {
 		key := keys[(start+i)%len(keys)]
 		claim := claimFromHotKey(key)
-		if claimDedupeKey(claim) == "" || !plausibleClaim(claim) {
+		if claimDedupeKey(claim) == "" || !plausibleClaim(s.reg, claim) {
 			continue
 		}
 		return Thought{
@@ -285,6 +286,7 @@ func (s *queryHotThoughtSource) advance(n int) int {
 type unresolvedThoughtSource struct {
 	mu        sync.Mutex
 	telemetry *queryTelemetry
+	reg       *reasoning.PredicateRegistry
 	limit     int
 	next      int
 }
@@ -305,7 +307,7 @@ func (s *unresolvedThoughtSource) Next(ctx context.Context) (Thought, bool, erro
 	start := s.advance(len(claims))
 	for i := 0; i < len(claims); i++ {
 		item := claims[(start+i)%len(claims)]
-		if claimDedupeKey(item.Claim) == "" || !plausibleClaim(item.Claim) {
+		if claimDedupeKey(item.Claim) == "" || !plausibleClaim(s.reg, item.Claim) {
 			continue
 		}
 		return Thought{
@@ -1078,10 +1080,10 @@ func plausibleEntityName(name string) bool {
 	return true
 }
 
-func plausibleClaim(claim reasoning.Claim) bool {
+func plausibleClaim(reg *reasoning.PredicateRegistry, claim reasoning.Claim) bool {
 	// Reject predicate-dependent tautologies (e.g. "X presents with X"); a self-
-	// loop on a reflexive-meaningful predicate (X interacts with X) is kept.
-	if isTautologyClaim(claim) {
+	// loop on a reflexive predicate (X interacts with X) is kept.
+	if isTautologyClaim(reg, claim) {
 		return false
 	}
 	return plausibleEntityName(claim.Subject) && plausibleEntityName(claim.Object)

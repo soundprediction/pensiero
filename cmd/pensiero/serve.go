@@ -379,6 +379,7 @@ func startCognitionWorker(ctx context.Context, opts serveOptions, runtime *grpcR
 		Reasoner:    runtime.cache,
 		Questions:   questions,
 		Unconfirmed: unconfirmed,
+		Reg:         reg,
 		Logger:      logger,
 	}
 	scheduler := NewCognitionScheduler(selector, engine, load, CognitionSchedulerConfig{

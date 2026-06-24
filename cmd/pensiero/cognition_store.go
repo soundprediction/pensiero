@@ -261,26 +261,18 @@ func normalizeQuestionClaim(claim reasoning.Claim) reasoning.Claim {
 	}
 }
 
-// reflexiveMeaningfulPredicates are predicates for which a self-loop (subject ==
-// object) is a genuine fact, not a tautology: a thing can interact with /
-// inhibit / activate itself (self-interaction, autoinhibition, autoregulation).
-// For every other predicate a self-loop is trivially circular.
-var reflexiveMeaningfulPredicates = map[string]bool{
-	"interacts": true,
-	"inhibits":  true,
-	"activates": true,
-}
-
 // isTautologyClaim reports whether a claim is trivially circular. A self-loop
-// (subject == object, case-insensitive) is a tautology UNLESS the predicate is
-// one where self-application is meaningful — whether a self-loop is a tautology
-// depends on the predicate.
-func isTautologyClaim(claim reasoning.Claim) bool {
+// (subject == object, case-insensitive) is a tautology UNLESS the predicate
+// model declares the predicate reflexive (self-application meaningful, e.g. a
+// thing interacting with / inhibiting / activating itself) — directly or
+// inherited from a super-property. Whether a self-loop is a tautology is a
+// property of the predicate, resolved via the registry.
+func isTautologyClaim(reg *reasoning.PredicateRegistry, claim reasoning.Claim) bool {
 	subject := strings.TrimSpace(claim.Subject)
 	if subject == "" || !strings.EqualFold(subject, strings.TrimSpace(claim.Object)) {
 		return false
 	}
-	return !reflexiveMeaningfulPredicates[strings.ToLower(strings.TrimSpace(claim.Predicate))]
+	return !reg.IsReflexive(claim.Predicate)
 }
 
 func claimDedupeKey(claim reasoning.Claim) string {

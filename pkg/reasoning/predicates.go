@@ -149,6 +149,45 @@ func (r *PredicateRegistry) has(canon string, c Characteristic) bool {
 	return ok && m.Has(c)
 }
 
+// IsReflexive reports whether self-application P(a,a) is meaningful for the
+// predicate (e.g. a thing interacting with / inhibiting / activating itself).
+// It is a property of the predicate model: true when the predicate carries the
+// Reflexive characteristic directly, OR inherits it from a super-property
+// (P ⊑ Q and Q is reflexive). The input may be an alias or canonical form.
+// Predicates not declared reflexive are treated as irreflexive, so a self-loop
+// on them is a tautology.
+func (r *PredicateRegistry) IsReflexive(predicate string) bool {
+	if r == nil {
+		return false
+	}
+	meta, ok := r.Canonical(predicate)
+	if !ok {
+		return false
+	}
+	return r.reflexiveCanonical(meta.Canonical, map[string]bool{})
+}
+
+func (r *PredicateRegistry) reflexiveCanonical(canon string, seen map[string]bool) bool {
+	key := normKey(canon)
+	if key == "" || seen[key] {
+		return false
+	}
+	seen[key] = true
+	m, ok := r.byCanon[key]
+	if !ok {
+		return false
+	}
+	if m.Has(Reflexive) {
+		return true
+	}
+	for _, parent := range m.SubPropertyOf {
+		if r.reflexiveCanonical(parent, seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // Conflicting returns the predicates declared disjoint with canon: a predicate B
 // such that an asserted B(a,b) is logically inconsistent with a claimed canon(a,b).
 // Symmetric over the registered DisjointPairs. Drives contradiction detection.

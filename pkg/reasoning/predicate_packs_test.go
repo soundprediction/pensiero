@@ -369,3 +369,40 @@ func TestMedicalPackRepair(t *testing.T) {
 		}
 	}
 }
+
+func TestIsReflexivePredicateAware(t *testing.T) {
+	reg := DefaultMedicalRegistry()
+	// Reflexive-meaningful predicates: a self-loop is a real fact, not a tautology.
+	for _, p := range []string{"interacts_with", "interacts", "inhibits", "activates", "INHIBITS"} {
+		if !reg.IsReflexive(p) {
+			t.Errorf("IsReflexive(%q) = false, want true", p)
+		}
+	}
+	// Irreflexive predicates: a self-loop is a tautology.
+	for _, p := range []string{"causes", "has_phenotype", "presents with", "associated_with", "treats", "is_a"} {
+		if reg.IsReflexive(p) {
+			t.Errorf("IsReflexive(%q) = true, want false", p)
+		}
+	}
+	// Unknown predicate: not reflexive.
+	if reg.IsReflexive("totally_unknown_predicate") {
+		t.Errorf("IsReflexive(unknown) = true, want false")
+	}
+}
+
+func TestIsReflexiveInherited(t *testing.T) {
+	// A predicate inherits reflexivity from a reflexive super-property.
+	reg, err := BuildRegistry(nil, PredicatePack{
+		Name: "reflexive-inherit-test",
+		Predicates: []PredicateMeta{
+			{Canonical: "self_relatable", Chars: Reflexive},
+			{Canonical: "child_rel", SubPropertyOf: []string{"self_relatable"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	if !reg.IsReflexive("child_rel") {
+		t.Errorf("child_rel should inherit reflexivity from self_relatable")
+	}
+}
