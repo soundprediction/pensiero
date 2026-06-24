@@ -53,7 +53,7 @@ type thoughtSource interface {
 	Next(context.Context) (Thought, bool, error)
 }
 
-func NewTopicSelector(store *generationStore, telemetry *queryTelemetry, reg *reasoning.PredicateRegistry, embedder cognitionEmbedder, cfg TopicSelectorConfig) *TopicSelector {
+func NewTopicSelector(store generationAcquirer, telemetry *queryTelemetry, reg *reasoning.PredicateRegistry, embedder cognitionEmbedder, cfg TopicSelectorConfig) *TopicSelector {
 	cfg = normalizeTopicSelectorConfig(cfg)
 	randomSource := newRandomThoughtSource(store, reg, cfg.RandomSampleLimit, cfg.Random)
 	sources := []weightedThoughtSource{
@@ -316,14 +316,14 @@ func (s *unresolvedThoughtSource) advance(n int) int {
 }
 
 type randomThoughtSource struct {
-	store       *generationStore
+	store       generationAcquirer
 	reg         *reasoning.PredicateRegistry
 	sampleLimit int
 	mu          sync.Mutex
 	random      *rand.Rand
 }
 
-func newRandomThoughtSource(store *generationStore, reg *reasoning.PredicateRegistry, sampleLimit int, rnd *rand.Rand) *randomThoughtSource {
+func newRandomThoughtSource(store generationAcquirer, reg *reasoning.PredicateRegistry, sampleLimit int, rnd *rand.Rand) *randomThoughtSource {
 	if sampleLimit <= 0 {
 		sampleLimit = defaultTopicRandomSampleLimit
 	}
@@ -398,7 +398,7 @@ func (s *randomThoughtSource) pickPredicate() (string, bool) {
 }
 
 type semanticThoughtSource struct {
-	store       *generationStore
+	store       generationAcquirer
 	telemetry   *queryTelemetry
 	reg         *reasoning.PredicateRegistry
 	embedder    cognitionEmbedder
@@ -514,7 +514,7 @@ func (s *semanticThoughtSource) nearestNeighbor(ctx context.Context, hotText str
 	return texts[bestIndex], true
 }
 
-func sampleEntityNames(ctx context.Context, store *generationStore, limit, skip int) ([]string, error) {
+func sampleEntityNames(ctx context.Context, store generationAcquirer, limit, skip int) ([]string, error) {
 	if store == nil {
 		return nil, nil
 	}

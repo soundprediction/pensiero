@@ -20,7 +20,7 @@ const (
 )
 
 type proofCache struct {
-	store               *generationStore
+	provider            generationProvider
 	reg                 *reasoning.PredicateRegistry
 	registryFingerprint string
 	cfg                 proofCacheConfigKey
@@ -102,7 +102,7 @@ type proofCacheKey struct {
 	object     string
 }
 
-func newProofCache(store *generationStore, reg *reasoning.PredicateRegistry, cfg reasoning.Config, maxEntries int, maxBytes int) *proofCache {
+func newProofCache(provider generationProvider, reg *reasoning.PredicateRegistry, cfg reasoning.Config, maxEntries int, maxBytes int) *proofCache {
 	if maxEntries <= 0 {
 		maxEntries = defaultProofCacheMaxEntries
 	}
@@ -110,7 +110,7 @@ func newProofCache(store *generationStore, reg *reasoning.PredicateRegistry, cfg
 		maxBytes = defaultProofCacheMaxBytes
 	}
 	return &proofCache{
-		store:               store,
+		provider:            provider,
 		reg:                 reg,
 		registryFingerprint: reg.Fingerprint(),
 		cfg: proofCacheConfigKey{
@@ -129,13 +129,13 @@ func newProofCache(store *generationStore, reg *reasoning.PredicateRegistry, cfg
 }
 
 func (c *proofCache) Derive(ctx context.Context, req reasoning.DeriveRequest) ([]reasoning.Proof, error) {
-	gen, release, err := c.acquire()
+	normalized := c.normalizeDeriveRequest(req)
+	req = normalized.deriveRequest()
+	gen, release, err := c.acquire(ctx, generationRoute{Text: routeText(normalized.Source, normalized.Target)})
 	if err != nil {
 		setQueryCacheStatus(ctx, queryCacheStatusMiss)
 		return nil, err
 	}
-	normalized := c.normalizeDeriveRequest(req)
-	req = normalized.deriveRequest()
 	key := c.deriveKey(gen, req)
 	setQueryCacheKey(ctx, key)
 	value, status, err := c.loadOrCompute(ctx, key.hash, release, func() (proofCacheValue, error) {
@@ -154,12 +154,12 @@ func (c *proofCache) Derive(ctx context.Context, req reasoning.DeriveRequest) ([
 }
 
 func (c *proofCache) Entails(ctx context.Context, claim reasoning.Claim) (reasoning.EntailResult, error) {
-	gen, release, err := c.acquire()
+	claim = c.normalizeClaim(claim)
+	gen, release, err := c.acquire(ctx, generationRoute{Text: routeText(claim.Subject, claim.Object)})
 	if err != nil {
 		setQueryCacheStatus(ctx, queryCacheStatusMiss)
 		return reasoning.EntailResult{}, err
 	}
-	claim = c.normalizeClaim(claim)
 	key := c.claimKey(gen, "Entails", claim)
 	setQueryCacheKey(ctx, key)
 	value, status, err := c.loadOrCompute(ctx, key.hash, release, func() (proofCacheValue, error) {
@@ -178,12 +178,12 @@ func (c *proofCache) Entails(ctx context.Context, claim reasoning.Claim) (reason
 }
 
 func (c *proofCache) Contradicts(ctx context.Context, claim reasoning.Claim) (bool, *reasoning.Proof, error) {
-	gen, release, err := c.acquire()
+	claim = c.normalizeClaim(claim)
+	gen, release, err := c.acquire(ctx, generationRoute{Text: routeText(claim.Subject, claim.Object)})
 	if err != nil {
 		setQueryCacheStatus(ctx, queryCacheStatusMiss)
 		return false, nil, err
 	}
-	claim = c.normalizeClaim(claim)
 	key := c.claimKey(gen, "Contradicts", claim)
 	setQueryCacheKey(ctx, key)
 	value, status, err := c.loadOrCompute(ctx, key.hash, release, func() (proofCacheValue, error) {
@@ -205,24 +205,17 @@ func (c *proofCache) Contradicts(ctx context.Context, claim reasoning.Claim) (bo
 }
 
 func (c *proofCache) Name() string {
-	gen, release, err := c.acquire()
-	if err != nil {
+	if c == nil || c.provider == nil {
 		return "proof-cache"
 	}
-	defer release()
-	return gen.reasoner.Name() + "+predicate-constrained+proof-cache"
+	return c.provider.ProviderName() + "+predicate-constrained+proof-cache"
 }
 
-func (c *proofCache) acquire() (*generation, func(), error) {
-	if c == nil || c.store == nil {
+func (c *proofCache) acquire(ctx context.Context, route generationRoute) (*generation, func(), error) {
+	if c == nil || c.provider == nil {
 		return nil, func() {}, errNoGeneration
 	}
-	gen, release := c.store.Acquire()
-	if gen == nil || gen.reasoner == nil {
-		release()
-		return nil, func() {}, errNoGeneration
-	}
-	return gen, release, nil
+	return c.provider.AcquireGeneration(ctx, route)
 }
 
 func (c *proofCache) loadOrCompute(ctx context.Context, hash string, release func(), compute func() (proofCacheValue, error)) (proofCacheValue, queryCacheStatus, error) {
@@ -362,6 +355,10 @@ func (c *proofCache) normalizeClaim(claim reasoning.Claim) reasoning.Claim {
 		Predicate: c.canonicalPredicate(claim.Predicate),
 		Object:    strings.TrimSpace(claim.Object),
 	}
+}
+
+func routeText(left string, right string) string {
+	return strings.TrimSpace(strings.TrimSpace(left) + " " + strings.TrimSpace(right))
 }
 
 func (c *proofCache) deriveKey(gen *generation, req reasoning.DeriveRequest) proofCacheKey {
