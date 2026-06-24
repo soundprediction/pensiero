@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -337,9 +336,9 @@ func (e *ThoughtEngine) emitQuestion(ctx context.Context, claim reasoning.Claim,
 	if e == nil || e.Questions == nil {
 		return ctx.Err()
 	}
-	// Never emit a tautology — a claim whose subject and object are the same
-	// entity ("does X present with X?") is trivially circular and unhelpful.
-	if strings.EqualFold(strings.TrimSpace(claim.Subject), strings.TrimSpace(claim.Object)) {
+	// Never emit a predicate-dependent tautology ("does X present with X?"); a
+	// self-loop on a reflexive-meaningful predicate (X interacts with X) is fine.
+	if isTautologyClaim(claim) {
 		return ctx.Err()
 	}
 	return e.Questions.Emit(ctx, []reasoning.Question{{
