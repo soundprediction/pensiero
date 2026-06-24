@@ -49,9 +49,9 @@ func (o *AssumedFactsOracle) Holds(ctx context.Context, claim Claim) (bool, floa
 	want := canonicalClaim(claim, o.reg)
 	for _, f := range AssumedFactsFromContext(ctx) {
 		got := canonicalClaim(f, o.reg)
-		if sameEntity(got.Subject, want.Subject) &&
+		if entityMatches(got.Subject, want.Subject) &&
 			normKey(got.Predicate) == normKey(want.Predicate) &&
-			sameEntity(got.Object, want.Object) {
+			entityMatches(got.Object, want.Object) {
 			proof := &Proof{
 				Source:     want.Subject,
 				Target:     want.Object,
@@ -89,9 +89,9 @@ func (o *AssumedFactsOracle) Bindings(ctx context.Context, predicate, boundSubje
 		}
 		var cand string
 		switch {
-		case boundSubject != "" && sameEntity(got.Subject, boundSubject):
+		case boundSubject != "" && entityMatches(got.Subject, boundSubject):
 			cand = got.Object
-		case boundObject != "" && sameEntity(got.Object, boundObject):
+		case boundObject != "" && entityMatches(got.Object, boundObject):
 			cand = got.Subject
 		default:
 			continue

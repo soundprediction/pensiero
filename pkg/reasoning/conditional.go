@@ -605,7 +605,7 @@ func unifyTerm(term ruleschema.Term, value string, bindings map[string]string) b
 		return bindVariable(bindings, name, value)
 	}
 	entity := strings.TrimSpace(term.Entity)
-	return entity != "" && sameEntity(entity, value)
+	return entity != "" && entityMatches(entity, value)
 }
 
 func bindVariable(bindings map[string]string, name string, value string) bool {
@@ -615,7 +615,7 @@ func bindVariable(bindings map[string]string, name string, value string) bool {
 		return false
 	}
 	if existing := strings.TrimSpace(bindings[name]); existing != "" {
-		return sameEntity(existing, value)
+		return entityMatches(existing, value)
 	}
 	bindings[name] = value
 	return true
