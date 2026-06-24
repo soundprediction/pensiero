@@ -23,7 +23,15 @@ func openLadybugGraph(path string, readOnly bool) (graphHandle, error) {
 		MaxNumThreads:     1,
 		EnableCompression: true,
 		ReadOnly:          readOnly,
-		MaxDbSize:         1 << 43,
+		// MaxDbSize pre-reserves this much *virtual* address space per open
+		// handle (ladybug mmaps the region up front). The multi-topic serving
+		// daemon keeps many read-only handles open at once (max-open-topics ×
+		// grpc-pool-size), so an 8TB (1<<43) reservation per handle exhausts the
+		// ~128TB x86-64 user address space after ~16 handles and OpenDatabase
+		// fails with "status 1". Serving graphs are bounded and read-only, so a
+		// 16GB cap (28× the largest current graph) is ample while keeping the
+		// total virtual reservation tiny across dozens of handles.
+		MaxDbSize: 1 << 34,
 	}
 	db, err := ladybug.OpenDatabase(path, cfg)
 	if err != nil {
