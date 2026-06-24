@@ -58,6 +58,7 @@ type serveOptions struct {
 	RandomWeight        int
 	UnresolvedWeight    int
 	SemanticWeight      int
+	BridgeWeight        int
 	RandomSampleLimit   int
 	SemanticSample      int
 	MaxOpenTopics       int
@@ -98,6 +99,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.RandomWeight, "cognition-random-weight", opts.RandomWeight, "fixed topic weight for random graph samples; minimum 1")
 	fs.IntVar(&opts.UnresolvedWeight, "cognition-unresolved-weight", opts.UnresolvedWeight, "fixed topic weight for unresolved contradiction checks")
 	fs.IntVar(&opts.SemanticWeight, "cognition-semantic-weight", opts.SemanticWeight, "fixed topic weight for embedder semantic neighbors")
+	fs.IntVar(&opts.BridgeWeight, "cognition-bridge-weight", opts.BridgeWeight, "fixed topic weight for embedding-bridge missing-link hypotheses (two embedding-near but unconnected hub entities)")
 	fs.IntVar(&opts.RandomSampleLimit, "cognition-random-sample", opts.RandomSampleLimit, "bounded entity sample size for random cognition topics")
 	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
 	fs.BoolVar(&opts.ShowCognitionLabels, "cognition-show-labels", opts.ShowCognitionLabels, "include raw entity labels (not just hashes) in /thinking and /questions; default hashes-only for privacy")
@@ -322,10 +324,15 @@ func defaultServeOptions() serveOptions {
 		GRPCPoolSize:      envInt("PENSIERO_GRPC_POOL_SIZE", defaultGRPCPoolSize),
 		InventorySample:   envInt("PENSIERO_INVENTORY_SAMPLE", defaultPredicateInventorySample),
 		CognitionMax:      envInt("PENSIERO_COGNITION_MAX_THOUGHTS", defaultCognitionMaxThoughts),
-		QueryHotWeight:    envInt("PENSIERO_COGNITION_QUERY_HOT_WEIGHT", 3),
-		RandomWeight:      envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 1),
-		UnresolvedWeight:  envInt("PENSIERO_COGNITION_UNRESOLVED_WEIGHT", 2),
-		SemanticWeight:    envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
+		// Cognition should mostly emit questions that help the graph generalize
+		// (and thereby shrink), so the question-generating sources (bridge,
+		// unresolved-contradiction, neighborhood, semantic) outweigh proof
+		// precompute, which only warms the cache and asks nothing.
+		QueryHotWeight:   envInt("PENSIERO_COGNITION_QUERY_HOT_WEIGHT", 1),
+		RandomWeight:     envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 2),
+		UnresolvedWeight: envInt("PENSIERO_COGNITION_UNRESOLVED_WEIGHT", 2),
+		SemanticWeight:   envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
+		BridgeWeight:     envInt("PENSIERO_COGNITION_BRIDGE_WEIGHT", 3),
 		RandomSampleLimit: envInt("PENSIERO_COGNITION_RANDOM_SAMPLE", defaultTopicRandomSampleLimit),
 		SemanticSample:    envInt("PENSIERO_COGNITION_SEMANTIC_SAMPLE", defaultTopicSemanticSample),
 		MaxOpenTopics:     envInt("PENSIERO_MAX_OPEN_TOPICS", defaultMaxOpenTopics),
@@ -353,6 +360,7 @@ func startCognitionWorker(ctx context.Context, opts serveOptions, runtime *grpcR
 		RandomWeight:      opts.RandomWeight,
 		UnresolvedWeight:  opts.UnresolvedWeight,
 		SemanticWeight:    opts.SemanticWeight,
+		BridgeWeight:      opts.BridgeWeight,
 		HotKeyLimit:       defaultTopicHotKeyLimit,
 		RandomSampleLimit: opts.RandomSampleLimit,
 		SemanticSample:    opts.SemanticSample,

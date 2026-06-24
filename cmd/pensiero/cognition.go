@@ -14,6 +14,12 @@ const (
 	ThoughtProofPrecompute   ThoughtType = "proof-precompute"
 	ThoughtContradictionHunt ThoughtType = "contradiction-hunt"
 	ThoughtHypothesisTest    ThoughtType = "hypothesis-test"
+	// ThoughtGeneralizationBridge ponders two semantically-close but
+	// generalization-distant entities. The objective is not to assert a direct
+	// edge but to surface that they should be linked more closely through the
+	// generalization graph (a shared abstraction), so it emits a question rather
+	// than running an entailment check.
+	ThoughtGeneralizationBridge ThoughtType = "generalization-bridge"
 
 	defaultCognitionInterval       = 10 * time.Second
 	defaultCognitionWindowBudget   = 250 * time.Millisecond
@@ -311,6 +317,11 @@ func (e *ThoughtEngine) Execute(ctx context.Context, thought Thought) error {
 		default:
 			return e.emitQuestion(ctx, claim, "candidate claim is unsupported and would improve coverage if resolved", unsupportedQuestionGain(thought, result))
 		}
+	case ThoughtGeneralizationBridge:
+		// The two entities are semantically close but not linked through the
+		// generalization graph. Rather than assert a direct edge, ask what shared
+		// generalization would connect them more closely.
+		return e.emitQuestion(ctx, claim, "semantically close but not linked through the generalization graph; what shared generalization connects them?", unsupportedQuestionGain(thought, reasoning.EntailResult{}))
 	default:
 		return nil
 	}

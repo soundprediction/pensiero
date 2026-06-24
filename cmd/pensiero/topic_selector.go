@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type TopicSelectorConfig struct {
 	RandomWeight      int
 	UnresolvedWeight  int
 	SemanticWeight    int
+	BridgeWeight      int
 	HotKeyLimit       int
 	RandomSampleLimit int
 	SemanticSample    int
@@ -60,6 +62,7 @@ func NewTopicSelector(store generationAcquirer, telemetry *queryTelemetry, reg *
 		{Weight: cfg.QueryHotWeight, Source: &queryHotThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
 		{Weight: cfg.UnresolvedWeight, Source: &unresolvedThoughtSource{telemetry: telemetry, limit: cfg.HotKeyLimit}},
 		{Weight: cfg.RandomWeight, Source: randomSource},
+		{Weight: cfg.BridgeWeight, Source: newBridgeThoughtSource(store, cfg.RandomSampleLimit, cfg.Random)},
 	}
 	if embedder != nil && cfg.SemanticWeight > 0 {
 		sources = append(sources, weightedThoughtSource{
@@ -108,6 +111,9 @@ func normalizeTopicSelectorConfig(cfg TopicSelectorConfig) TopicSelectorConfig {
 	}
 	if cfg.SemanticWeight < 0 {
 		cfg.SemanticWeight = 0
+	}
+	if cfg.BridgeWeight < 0 {
+		cfg.BridgeWeight = 0
 	}
 	if cfg.RandomWeight <= 0 {
 		cfg.RandomWeight = 1
@@ -478,6 +484,152 @@ func (s *randomThoughtSource) shuffleStrings(values []string) {
 	s.random.Shuffle(len(values), func(i, j int) { values[i], values[j] = values[j], values[i] })
 }
 
+const (
+	defaultBridgeHubLimit = 150
+	bridgeSimLo           = 0.45
+	bridgeSimHi           = 0.85
+	bridgeHubTTL          = 10 * time.Minute
+)
+
+// bridgeThoughtSource ponders connections between two nodes that are
+// semantically close (embedding-near, via the stored name_embedding) but not
+// directly connected in the graph -- candidate long-distance / missing links,
+// which are the highest-value gaps to resolve. It seeds on well-connected "hub"
+// entities (cached, degree-ranked) so the pondered pairs are central, and uses
+// a similarity *band* so it proposes related-but-distinct pairs rather than
+// synonyms. Uses the embedding model's stored output; no external embedder call.
+type bridgeThoughtSource struct {
+	store       generationAcquirer
+	random      *rand.Rand
+	now         func() time.Time
+	hubs        []string
+	hubsAt      time.Time
+	sampleLimit int
+	hubLimit    int
+	mu          sync.Mutex
+}
+
+func newBridgeThoughtSource(store generationAcquirer, sampleLimit int, rnd *rand.Rand) *bridgeThoughtSource {
+	if sampleLimit <= 0 {
+		sampleLimit = defaultTopicRandomSampleLimit
+	}
+	if rnd == nil {
+		rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	return &bridgeThoughtSource{
+		store:       store,
+		random:      rnd,
+		now:         time.Now,
+		sampleLimit: sampleLimit,
+		hubLimit:    defaultBridgeHubLimit,
+	}
+}
+
+func (s *bridgeThoughtSource) Name() string { return "bridge" }
+
+// ensureHubs returns the cached degree-ranked hub names, refreshing when stale.
+// On error it keeps the last good set so transient failures don't stall.
+func (s *bridgeThoughtSource) ensureHubs(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	fresh := len(s.hubs) > 0 && s.now().Sub(s.hubsAt) < bridgeHubTTL
+	cached := s.hubs
+	s.mu.Unlock()
+	if fresh {
+		return cached, nil
+	}
+	names, err := sampleSeedsByDegree(ctx, s.store, s.hubLimit, 0)
+	if err != nil {
+		return cached, err
+	}
+	if len(names) == 0 {
+		return cached, nil
+	}
+	s.mu.Lock()
+	s.hubs = names
+	s.hubsAt = s.now()
+	s.mu.Unlock()
+	return names, nil
+}
+
+func (s *bridgeThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Thought{}, false, err
+	}
+	if s == nil || s.store == nil {
+		return Thought{}, false, nil
+	}
+	hubs, err := s.ensureHubs(ctx)
+	if err != nil {
+		return Thought{}, false, err
+	}
+	if len(hubs) < 3 {
+		return Thought{}, false, nil
+	}
+	s.mu.Lock()
+	seed := hubs[s.random.Intn(len(hubs))]
+	s.mu.Unlock()
+	return s.bridgeFromSeed(ctx, seed, hubs)
+}
+
+func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, hubs []string) (Thought, bool, error) {
+	gen, release := s.store.Acquire()
+	if gen == nil || gen.pool == nil {
+		release()
+		return Thought{}, false, errNoGeneration
+	}
+	defer release()
+
+	limit := s.sampleLimit * 4
+	if limit < 8 {
+		limit = 8
+	}
+	// Embedding-near hub candidates (similarity band excludes near-synonyms).
+	cand, err := gen.pool.Query(ctx, bridgeCosineQuery(seed, hubs, bridgeSimLo, bridgeSimHi, limit), nil)
+	if err != nil {
+		return Thought{}, false, err
+	}
+	if len(cand) == 0 {
+		return Thought{}, false, nil
+	}
+	// The seed's direct neighbours: skip pairs already directly connected, since
+	// the objective is to draw *distant* entities closer through the
+	// generalization graph, not to restate an existing edge.
+	oneHop, err := gen.pool.Query(ctx, seedOneHopQuery(limit*2), map[string]any{"seed": seed})
+	if err != nil {
+		return Thought{}, false, err
+	}
+	directs := map[string]struct{}{lowerKey(seed): {}}
+	for _, row := range oneHop {
+		if n := lowerKey(rowString(row, "neighbor")); n != "" {
+			directs[n] = struct{}{}
+		}
+	}
+	// Highest-similarity candidate that is not already directly connected.
+	object, bestSim := "", 0.0
+	for _, row := range cand {
+		name := strings.TrimSpace(rowString(row, "name"))
+		if name == "" {
+			continue
+		}
+		if _, blocked := directs[lowerKey(name)]; blocked {
+			continue
+		}
+		if sim := rowFloat(row, "sim"); object == "" || sim > bestSim {
+			object, bestSim = name, sim
+		}
+	}
+	if object == "" {
+		return Thought{}, false, nil
+	}
+	return Thought{
+		Type:      ThoughtGeneralizationBridge,
+		Claim:     reasoning.Claim{Subject: seed, Predicate: "shares_generalization_with", Object: object},
+		Source:    s.Name(),
+		Rationale: "embedding-near but generalization-distant",
+		Meta:      map[string]any{"expected_gain": bridgeGain(bestSim)},
+	}, true, nil
+}
+
 type semanticThoughtSource struct {
 	store       generationAcquirer
 	telemetry   *queryTelemetry
@@ -727,6 +879,67 @@ func seedTwoHopQuery(limit int) string {
 		limit = 1
 	}
 	return fmt.Sprintf("MATCH (a:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(:Entity)-[:RELATES_TO]->(:RelatesToNode_)-[:RELATES_TO]->(c:Entity) WHERE a.name = $seed AND c.name <> $seed RETURN DISTINCT c.name AS twohop LIMIT %d", limit)
+}
+
+// bridgeCosineQuery scores the seed's embedding similarity against a bounded set
+// of hub entities and keeps those in the [lo, hi] band. Hub names are inlined as
+// escaped Cypher string literals (entity names contain apostrophes, so $list
+// params are avoided). array_cosine_similarity is a built-in over the stored
+// name_embedding -- no vector extension required.
+func bridgeCosineQuery(seed string, hubs []string, lo, hi float64, limit int) string {
+	if limit < 1 {
+		limit = 1
+	}
+	var list strings.Builder
+	list.WriteByte('[')
+	for i, h := range hubs {
+		if i > 0 {
+			list.WriteByte(',')
+		}
+		list.WriteString(cypherString(h))
+	}
+	list.WriteByte(']')
+	seedLit := cypherString(seed)
+	return fmt.Sprintf("MATCH (a:Entity {name:%s}) MATCH (b:Entity) WHERE b.name IN %s AND b.name <> %s AND b.name_embedding IS NOT NULL WITH b, array_cosine_similarity(a.name_embedding, b.name_embedding) AS sim WHERE sim > %f AND sim < %f RETURN b.name AS name, sim ORDER BY sim DESC LIMIT %d",
+		seedLit, list.String(), seedLit, lo, hi, limit)
+}
+
+// bridgeGain maps the embedding similarity within the band to a high expected
+// gain (0.55-0.95): a semantically close pair with no direct edge is a strong
+// candidate missing link.
+func bridgeGain(sim float64) float64 {
+	if bridgeSimHi <= bridgeSimLo {
+		return 0.75
+	}
+	n := (sim - bridgeSimLo) / (bridgeSimHi - bridgeSimLo)
+	if n < 0 {
+		n = 0
+	}
+	if n > 1 {
+		n = 1
+	}
+	return clamp01(0.55 + 0.4*n)
+}
+
+func rowFloat(row map[string]any, key string) float64 {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int:
+		return float64(v)
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return f
+	}
+	return 0
 }
 
 // normalizePredicateLabel lowercases a graph predicate (stored upper-case, e.g.
