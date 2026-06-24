@@ -347,7 +347,10 @@ func (s *randomThoughtSource) Next(ctx context.Context) (Thought, bool, error) {
 	if s == nil || s.store == nil {
 		return Thought{}, false, nil
 	}
-	names, err := sampleEntityNames(ctx, s.store, s.sampleLimit)
+	s.mu.Lock()
+	skip := s.random.Intn(randomSampleSkipMax + 1)
+	s.mu.Unlock()
+	names, err := sampleEntityNames(ctx, s.store, s.sampleLimit, skip)
 	if err != nil || len(names) < 2 {
 		return Thought{}, false, err
 	}
@@ -428,7 +431,13 @@ func (s *semanticThoughtSource) Next(ctx context.Context) (Thought, bool, error)
 		if hotText == "" {
 			continue
 		}
-		names, err := sampleEntityNames(ctx, s.store, s.sampleLimit)
+		s.mu.Lock()
+		skip := 0
+		if s.random != nil {
+			skip = s.random.Intn(randomSampleSkipMax + 1)
+		}
+		s.mu.Unlock()
+		names, err := sampleEntityNames(ctx, s.store, s.sampleLimit, skip)
 		if err != nil || len(names) == 0 {
 			return Thought{}, false, err
 		}
@@ -505,7 +514,7 @@ func (s *semanticThoughtSource) nearestNeighbor(ctx context.Context, hotText str
 	return texts[bestIndex], true
 }
 
-func sampleEntityNames(ctx context.Context, store *generationStore, limit int) ([]string, error) {
+func sampleEntityNames(ctx context.Context, store *generationStore, limit, skip int) ([]string, error) {
 	if store == nil {
 		return nil, nil
 	}
@@ -518,9 +527,17 @@ func sampleEntityNames(ctx context.Context, store *generationStore, limit int) (
 		return nil, errNoGeneration
 	}
 	defer release()
-	rows, err := gen.pool.Query(ctx, randomEntitySampleQuery(limit), nil)
+	rows, err := gen.pool.Query(ctx, randomEntitySampleQuery(skip, limit), nil)
 	if err != nil {
 		return nil, err
+	}
+	if len(rows) == 0 && skip > 0 {
+		// Random offset overshot a smaller graph; fall back to the head so the
+		// random floor still yields a topic.
+		rows, err = gen.pool.Query(ctx, randomEntitySampleQuery(0, limit), nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	seen := map[string]struct{}{}
 	names := make([]string, 0, len(rows))
@@ -543,11 +560,21 @@ func sampleEntityNames(ctx context.Context, store *generationStore, limit int) (
 	return names, nil
 }
 
-func randomEntitySampleQuery(limit int) string {
+// randomSampleSkipMax bounds the Go-computed random offset for entity sampling.
+// ladybug has no rand() Cypher function, so randomness comes from a random SKIP
+// offset (with a fallback to 0 when it overshoots a smaller graph).
+const randomSampleSkipMax = 20000
+
+func randomEntitySampleQuery(skip, limit int) string {
 	if limit < 2 {
 		limit = 2
 	}
-	return fmt.Sprintf("MATCH (n:Entity) WHERE n.name IS NOT NULL RETURN n.name AS name ORDER BY rand() LIMIT %d", limit)
+	if skip < 0 {
+		skip = 0
+	}
+	// SKIP/LIMIT without ORDER BY: ladybug-compatible (no rand()); the offset is
+	// chosen randomly in Go so successive samples cover different regions.
+	return fmt.Sprintf("MATCH (n:Entity) WHERE n.name IS NOT NULL RETURN n.name AS name SKIP %d LIMIT %d", skip, limit)
 }
 
 func claimFromHotKey(key QueryHotKey) reasoning.Claim {
