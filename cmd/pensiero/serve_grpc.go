@@ -13,6 +13,7 @@ import (
 
 	"github.com/soundprediction/pensiero/pkg/grpcsvc"
 	"github.com/soundprediction/pensiero/pkg/reasoning"
+	"github.com/soundprediction/predicato/pkg/ruleschema"
 	"google.golang.org/grpc"
 )
 
@@ -134,6 +135,26 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 		return nil, err
 	}
 	cfg := serveReasoningConfig()
+
+	// Shared conditional rules are applied to EVERY served topic (route-independent),
+	// loaded once from --rules-graph. This decouples rule availability from the
+	// per-claim topic routing: a rule fires wherever its claim lands. Per-topic Rule
+	// nodes (if any) still apply on top of these.
+	var sharedRules []ruleschema.Rule
+	if opts.ConditionalRules && strings.TrimSpace(opts.RulesGraph) != "" {
+		rulesPool, err := newPooledGraphQuerier(opts.RulesGraph, 1, nil)
+		if err != nil {
+			return nil, fmt.Errorf("open rules-graph %q: %w", opts.RulesGraph, err)
+		}
+		loaded, stats, err := reasoning.LoadRulesFromGraph(context.Background(), rulesPool)
+		_ = rulesPool.Close()
+		if err != nil {
+			return nil, fmt.Errorf("load shared rules from %q: %w", opts.RulesGraph, err)
+		}
+		sharedRules = loaded
+		log.Printf("shared conditional rules loaded=%d from %s", stats.Loaded, opts.RulesGraph)
+	}
+
 	return func(ctx context.Context, path string) (*generation, error) {
 		pool, err := newPooledGraphQuerier(path, opts.GRPCPoolSize, initHandle)
 		if err != nil {
@@ -153,7 +174,12 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 				_ = pool.Close()
 				return nil, err
 			}
-			ruleSet, err := reasoning.CompileRules(loadedRules, reg)
+			// Per-topic Rule nodes plus the shared rules applied to every topic.
+			allRules := loadedRules
+			if len(sharedRules) > 0 {
+				allRules = append(append(make([]ruleschema.Rule, 0, len(loadedRules)+len(sharedRules)), loadedRules...), sharedRules...)
+			}
+			ruleSet, err := reasoning.CompileRules(allRules, reg)
 			if err != nil {
 				_ = pool.Close()
 				return nil, err

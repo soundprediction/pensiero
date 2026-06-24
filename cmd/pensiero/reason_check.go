@@ -18,8 +18,9 @@ import (
 func runReasonCheck(args []string) error {
 	fs := flag.NewFlagSet("reason-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var graphPath, claimSpec, backend, reasoningExt, assumeSpec string
+	var graphPath, claimSpec, backend, reasoningExt, assumeSpec, rulesGraph string
 	fs.StringVar(&graphPath, "graph", "", "ladybug graph path (read-only)")
+	fs.StringVar(&rulesGraph, "rules-graph", "", "optional shared rules graph applied on top of the topic graph (route-independent rules)")
 	fs.StringVar(&claimSpec, "claim", "", `claim to test as "subject|predicate|object"`)
 	fs.StringVar(&backend, "backend", reasoning.NativeBackendName, "ladybug-native or symbolic-graph")
 	fs.StringVar(&reasoningExt, "reasoning-extension", "reasoning", "reasoning extension path/name (ladybug-native only)")
@@ -70,6 +71,19 @@ func runReasonCheck(args []string) error {
 	loaded, stats, err := reasoning.LoadRulesFromGraph(ctx, gh)
 	if err != nil {
 		return fmt.Errorf("load rules: %w", err)
+	}
+	if rulesGraph != "" {
+		rg, rerr := openLadybugGraph(rulesGraph, true)
+		if rerr != nil {
+			return fmt.Errorf("open rules-graph: %w", rerr)
+		}
+		shared, sstats, serr := reasoning.LoadRulesFromGraph(ctx, rg)
+		_ = rg.Close()
+		if serr != nil {
+			return fmt.Errorf("load shared rules: %w", serr)
+		}
+		fmt.Printf("shared rules loaded=%d from %s\n", sstats.Loaded, rulesGraph)
+		loaded = append(loaded, shared...)
 	}
 	ruleSet, err := reasoning.CompileRules(loaded, reg)
 	if err != nil {
