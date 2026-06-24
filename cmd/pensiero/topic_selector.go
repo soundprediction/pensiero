@@ -1079,6 +1079,11 @@ func plausibleEntityName(name string) bool {
 }
 
 func plausibleClaim(claim reasoning.Claim) bool {
+	// Reject tautologies — a claim whose subject and object are the same entity
+	// ("X presents with X") is trivially circular and not worth a thought/question.
+	if strings.EqualFold(strings.TrimSpace(claim.Subject), strings.TrimSpace(claim.Object)) {
+		return false
+	}
 	return plausibleEntityName(claim.Subject) && plausibleEntityName(claim.Object)
 }
 
