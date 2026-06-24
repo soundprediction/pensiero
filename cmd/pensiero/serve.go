@@ -355,7 +355,13 @@ func startCognitionWorker(ctx context.Context, opts serveOptions, runtime *grpcR
 			logger.Printf("embedder url=%s model=%s", strings.TrimRight(opts.EmbedderURL, "/"), opts.EmbedderModel)
 		}
 	}
-	selector := NewTopicSelector(runtime.cognitionSource, telemetry, reg, embedder, TopicSelectorConfig{
+	// In multi-topic mode topics open only on query; wrap the acquirer so
+	// background cognition opens and rotates topics itself and never starves.
+	cognitionSource := runtime.cognitionSource
+	if mgr, ok := cognitionSource.(*topicGenerationManager); ok {
+		cognitionSource = newRotatingCognitionAcquirer(mgr)
+	}
+	selector := NewTopicSelector(cognitionSource, telemetry, reg, embedder, TopicSelectorConfig{
 		QueryHotWeight:    opts.QueryHotWeight,
 		RandomWeight:      opts.RandomWeight,
 		UnresolvedWeight:  opts.UnresolvedWeight,

@@ -255,6 +255,73 @@ func (m *topicGenerationManager) Acquire() (*generation, func()) {
 	return gen, release
 }
 
+// topicKeys returns the keys of all known topics (stable order).
+func (m *topicGenerationManager) topicKeys() []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]string, 0, len(m.topics))
+	for _, t := range m.topics {
+		keys = append(keys, t.Key)
+	}
+	return keys
+}
+
+// defaultCognitionRotatePeriod bounds how often idle cognition rotates to a new
+// topic graph so background thinking sweeps the whole corpus over time.
+const defaultCognitionRotatePeriod = 2 * time.Minute
+
+// rotatingCognitionAcquirer feeds background cognition in multi-topic mode. A
+// query opens topics lazily and they stay warm, but with no queries nothing is
+// open and cognition would starve ("no live reasoning generation"). This wrapper
+// keeps cognition fed: it reuses a warm (recently-queried) topic, and every
+// rotate period it opens the next topic in rotation, so idle thinking is
+// continuous AND sweeps across every topic graph over time.
+type rotatingCognitionAcquirer struct {
+	mgr        *topicGenerationManager
+	now        func() time.Time
+	lastRotate time.Time
+	period     time.Duration
+	idx        int
+	mu         sync.Mutex
+}
+
+func newRotatingCognitionAcquirer(mgr *topicGenerationManager) *rotatingCognitionAcquirer {
+	return &rotatingCognitionAcquirer{mgr: mgr, now: time.Now, period: defaultCognitionRotatePeriod}
+}
+
+func (r *rotatingCognitionAcquirer) Acquire() (*generation, func()) {
+	if r == nil || r.mgr == nil {
+		return nil, func() {}
+	}
+	r.mu.Lock()
+	rotate := r.lastRotate.IsZero() || r.now().Sub(r.lastRotate) >= r.period
+	r.mu.Unlock()
+	// Between rotations, reuse whatever topic is already warm (query-relevant).
+	if !rotate {
+		if gen, release := r.mgr.Acquire(); gen != nil {
+			return gen, release
+		}
+	}
+	keys := r.mgr.topicKeys()
+	if len(keys) == 0 {
+		return r.mgr.Acquire()
+	}
+	r.mu.Lock()
+	key := keys[r.idx%len(keys)]
+	r.idx++
+	r.lastRotate = r.now()
+	r.mu.Unlock()
+	gen, release, err := r.mgr.acquireTopic(context.Background(), key)
+	if err != nil || gen == nil || gen.reasoner == nil {
+		release()
+		return r.mgr.Acquire() // fall back to any open topic
+	}
+	return gen, release
+}
+
 func (m *topicGenerationManager) ProviderName() string {
 	gen, release := m.Acquire()
 	if gen == nil || gen.reasoner == nil {
