@@ -27,6 +27,45 @@ func claimsToProto(cs []reasoning.Claim) []*pb.Claim {
 	return out
 }
 
+func firedRuleToProto(f reasoning.FiredRule) *pb.FiredRule {
+	return &pb.FiredRule{
+		RuleId:     f.RuleID,
+		Consequent: claimToProto(f.Consequent),
+		Confidence: f.Confidence,
+		Proof:      proofPtrToProto(f.Proof),
+	}
+}
+
+func firedRulesToProto(fs []reasoning.FiredRule) []*pb.FiredRule {
+	if len(fs) == 0 {
+		return nil
+	}
+	out := make([]*pb.FiredRule, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, firedRuleToProto(f))
+	}
+	return out
+}
+
+func firedRulesFromProto(ps []*pb.FiredRule) []reasoning.FiredRule {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]reasoning.FiredRule, 0, len(ps))
+	for _, p := range ps {
+		if p == nil {
+			continue
+		}
+		out = append(out, reasoning.FiredRule{
+			RuleID:     p.GetRuleId(),
+			Consequent: claimFromProto(p.GetConsequent()),
+			Confidence: p.GetConfidence(),
+			Proof:      proofPtrFromProto(p.GetProof()),
+		})
+	}
+	return out
+}
+
 func claimsFromProto(ps []*pb.Claim) []reasoning.Claim {
 	if len(ps) == 0 {
 		return nil

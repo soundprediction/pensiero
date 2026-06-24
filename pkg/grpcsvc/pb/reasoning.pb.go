@@ -380,6 +380,170 @@ func (x *EntailResult) GetConfidence() float64 {
 	return 0
 }
 
+type FiredRule struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RuleId        string                 `protobuf:"bytes,1,opt,name=rule_id,json=ruleId,proto3" json:"rule_id,omitempty"`
+	Consequent    *Claim                 `protobuf:"bytes,2,opt,name=consequent,proto3" json:"consequent,omitempty"` // the derived conclusion (e.g. patient -recommended-> X)
+	Confidence    float64                `protobuf:"fixed64,3,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	Proof         *Proof                 `protobuf:"bytes,4,opt,name=proof,proto3" json:"proof,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FiredRule) Reset() {
+	*x = FiredRule{}
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FiredRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FiredRule) ProtoMessage() {}
+
+func (x *FiredRule) ProtoReflect() protoreflect.Message {
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FiredRule.ProtoReflect.Descriptor instead.
+func (*FiredRule) Descriptor() ([]byte, []int) {
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *FiredRule) GetRuleId() string {
+	if x != nil {
+		return x.RuleId
+	}
+	return ""
+}
+
+func (x *FiredRule) GetConsequent() *Claim {
+	if x != nil {
+		return x.Consequent
+	}
+	return nil
+}
+
+func (x *FiredRule) GetConfidence() float64 {
+	if x != nil {
+		return x.Confidence
+	}
+	return 0
+}
+
+func (x *FiredRule) GetProof() *Proof {
+	if x != nil {
+		return x.Proof
+	}
+	return nil
+}
+
+type FireRulesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AssumedFacts  []*Claim               `protobuf:"bytes,1,rep,name=assumed_facts,json=assumedFacts,proto3" json:"assumed_facts,omitempty"` // per-request ground facts (patient findings)
+	MaxRules      int32                  `protobuf:"varint,2,opt,name=max_rules,json=maxRules,proto3" json:"max_rules,omitempty"`            // cap on returned firings (0 = default)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FireRulesRequest) Reset() {
+	*x = FireRulesRequest{}
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FireRulesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FireRulesRequest) ProtoMessage() {}
+
+func (x *FireRulesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FireRulesRequest.ProtoReflect.Descriptor instead.
+func (*FireRulesRequest) Descriptor() ([]byte, []int) {
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *FireRulesRequest) GetAssumedFacts() []*Claim {
+	if x != nil {
+		return x.AssumedFacts
+	}
+	return nil
+}
+
+func (x *FireRulesRequest) GetMaxRules() int32 {
+	if x != nil {
+		return x.MaxRules
+	}
+	return 0
+}
+
+type FireRulesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Fired         []*FiredRule           `protobuf:"bytes,1,rep,name=fired,proto3" json:"fired,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FireRulesResponse) Reset() {
+	*x = FireRulesResponse{}
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FireRulesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FireRulesResponse) ProtoMessage() {}
+
+func (x *FireRulesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FireRulesResponse.ProtoReflect.Descriptor instead.
+func (*FireRulesResponse) Descriptor() ([]byte, []int) {
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *FireRulesResponse) GetFired() []*FiredRule {
+	if x != nil {
+		return x.Fired
+	}
+	return nil
+}
+
 type ContradictsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Claim         *Claim                 `protobuf:"bytes,1,opt,name=claim,proto3" json:"claim,omitempty"`
@@ -389,7 +553,7 @@ type ContradictsRequest struct {
 
 func (x *ContradictsRequest) Reset() {
 	*x = ContradictsRequest{}
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[5]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -401,7 +565,7 @@ func (x *ContradictsRequest) String() string {
 func (*ContradictsRequest) ProtoMessage() {}
 
 func (x *ContradictsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[5]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -414,7 +578,7 @@ func (x *ContradictsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContradictsRequest.ProtoReflect.Descriptor instead.
 func (*ContradictsRequest) Descriptor() ([]byte, []int) {
-	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{5}
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ContradictsRequest) GetClaim() *Claim {
@@ -434,7 +598,7 @@ type ContradictsResponse struct {
 
 func (x *ContradictsResponse) Reset() {
 	*x = ContradictsResponse{}
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[6]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -446,7 +610,7 @@ func (x *ContradictsResponse) String() string {
 func (*ContradictsResponse) ProtoMessage() {}
 
 func (x *ContradictsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[6]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -459,7 +623,7 @@ func (x *ContradictsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContradictsResponse.ProtoReflect.Descriptor instead.
 func (*ContradictsResponse) Descriptor() ([]byte, []int) {
-	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{6}
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ContradictsResponse) GetContradicts() bool {
@@ -492,7 +656,7 @@ type DeriveRequest struct {
 
 func (x *DeriveRequest) Reset() {
 	*x = DeriveRequest{}
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[7]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -504,7 +668,7 @@ func (x *DeriveRequest) String() string {
 func (*DeriveRequest) ProtoMessage() {}
 
 func (x *DeriveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[7]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -517,7 +681,7 @@ func (x *DeriveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeriveRequest.ProtoReflect.Descriptor instead.
 func (*DeriveRequest) Descriptor() ([]byte, []int) {
-	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{7}
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeriveRequest) GetSource() string {
@@ -585,7 +749,7 @@ type DeriveResponse struct {
 
 func (x *DeriveResponse) Reset() {
 	*x = DeriveResponse{}
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[8]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -597,7 +761,7 @@ func (x *DeriveResponse) String() string {
 func (*DeriveResponse) ProtoMessage() {}
 
 func (x *DeriveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[8]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -610,7 +774,7 @@ func (x *DeriveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeriveResponse.ProtoReflect.Descriptor instead.
 func (*DeriveResponse) Descriptor() ([]byte, []int) {
-	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{8}
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DeriveResponse) GetProofs() []*Proof {
@@ -628,7 +792,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[9]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -640,7 +804,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[9]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -653,7 +817,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{9}
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{12}
 }
 
 type HealthResponse struct {
@@ -665,7 +829,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[10]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -677,7 +841,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pensiero_v1_reasoning_proto_msgTypes[10]
+	mi := &file_pensiero_v1_reasoning_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -690,7 +854,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{10}
+	return file_pensiero_v1_reasoning_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *HealthResponse) GetStatus() string {
@@ -738,7 +902,21 @@ const file_pensiero_v1_reasoning_proto_rawDesc = "" +
 	"\x03all\x18\x03 \x03(\v2\x12.pensiero.v1.ProofR\x03all\x12\x1e\n" +
 	"\n" +
 	"confidence\x18\x04 \x01(\x01R\n" +
-	"confidence\">\n" +
+	"confidence\"\xa2\x01\n" +
+	"\tFiredRule\x12\x17\n" +
+	"\arule_id\x18\x01 \x01(\tR\x06ruleId\x122\n" +
+	"\n" +
+	"consequent\x18\x02 \x01(\v2\x12.pensiero.v1.ClaimR\n" +
+	"consequent\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\x03 \x01(\x01R\n" +
+	"confidence\x12(\n" +
+	"\x05proof\x18\x04 \x01(\v2\x12.pensiero.v1.ProofR\x05proof\"h\n" +
+	"\x10FireRulesRequest\x127\n" +
+	"\rassumed_facts\x18\x01 \x03(\v2\x12.pensiero.v1.ClaimR\fassumedFacts\x12\x1b\n" +
+	"\tmax_rules\x18\x02 \x01(\x05R\bmaxRules\"A\n" +
+	"\x11FireRulesResponse\x12,\n" +
+	"\x05fired\x18\x01 \x03(\v2\x16.pensiero.v1.FiredRuleR\x05fired\">\n" +
 	"\x12ContradictsRequest\x12(\n" +
 	"\x05claim\x18\x01 \x01(\v2\x12.pensiero.v1.ClaimR\x05claim\"a\n" +
 	"\x13ContradictsResponse\x12 \n" +
@@ -757,11 +935,12 @@ const file_pensiero_v1_reasoning_proto_rawDesc = "" +
 	"\x06proofs\x18\x01 \x03(\v2\x12.pensiero.v1.ProofR\x06proofs\"\x0f\n" +
 	"\rHealthRequest\"(\n" +
 	"\x0eHealthResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status2\xac\x02\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status2\xf8\x02\n" +
 	"\x0fReasonerService\x12A\n" +
 	"\aEntails\x12\x1b.pensiero.v1.EntailsRequest\x1a\x19.pensiero.v1.EntailResult\x12P\n" +
 	"\vContradicts\x12\x1f.pensiero.v1.ContradictsRequest\x1a .pensiero.v1.ContradictsResponse\x12A\n" +
-	"\x06Derive\x12\x1a.pensiero.v1.DeriveRequest\x1a\x1b.pensiero.v1.DeriveResponse\x12A\n" +
+	"\x06Derive\x12\x1a.pensiero.v1.DeriveRequest\x1a\x1b.pensiero.v1.DeriveResponse\x12J\n" +
+	"\tFireRules\x12\x1d.pensiero.v1.FireRulesRequest\x1a\x1e.pensiero.v1.FireRulesResponse\x12A\n" +
 	"\x06Health\x12\x1a.pensiero.v1.HealthRequest\x1a\x1b.pensiero.v1.HealthResponseB7Z5github.com/soundprediction/pensiero/pkg/grpcsvc/pb;pbb\x06proto3"
 
 var (
@@ -776,19 +955,22 @@ func file_pensiero_v1_reasoning_proto_rawDescGZIP() []byte {
 	return file_pensiero_v1_reasoning_proto_rawDescData
 }
 
-var file_pensiero_v1_reasoning_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_pensiero_v1_reasoning_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_pensiero_v1_reasoning_proto_goTypes = []any{
 	(*Claim)(nil),               // 0: pensiero.v1.Claim
 	(*ProofStep)(nil),           // 1: pensiero.v1.ProofStep
 	(*Proof)(nil),               // 2: pensiero.v1.Proof
 	(*EntailsRequest)(nil),      // 3: pensiero.v1.EntailsRequest
 	(*EntailResult)(nil),        // 4: pensiero.v1.EntailResult
-	(*ContradictsRequest)(nil),  // 5: pensiero.v1.ContradictsRequest
-	(*ContradictsResponse)(nil), // 6: pensiero.v1.ContradictsResponse
-	(*DeriveRequest)(nil),       // 7: pensiero.v1.DeriveRequest
-	(*DeriveResponse)(nil),      // 8: pensiero.v1.DeriveResponse
-	(*HealthRequest)(nil),       // 9: pensiero.v1.HealthRequest
-	(*HealthResponse)(nil),      // 10: pensiero.v1.HealthResponse
+	(*FiredRule)(nil),           // 5: pensiero.v1.FiredRule
+	(*FireRulesRequest)(nil),    // 6: pensiero.v1.FireRulesRequest
+	(*FireRulesResponse)(nil),   // 7: pensiero.v1.FireRulesResponse
+	(*ContradictsRequest)(nil),  // 8: pensiero.v1.ContradictsRequest
+	(*ContradictsResponse)(nil), // 9: pensiero.v1.ContradictsResponse
+	(*DeriveRequest)(nil),       // 10: pensiero.v1.DeriveRequest
+	(*DeriveResponse)(nil),      // 11: pensiero.v1.DeriveResponse
+	(*HealthRequest)(nil),       // 12: pensiero.v1.HealthRequest
+	(*HealthResponse)(nil),      // 13: pensiero.v1.HealthResponse
 }
 var file_pensiero_v1_reasoning_proto_depIdxs = []int32{
 	1,  // 0: pensiero.v1.Proof.steps:type_name -> pensiero.v1.ProofStep
@@ -796,22 +978,28 @@ var file_pensiero_v1_reasoning_proto_depIdxs = []int32{
 	0,  // 2: pensiero.v1.EntailsRequest.assumed_facts:type_name -> pensiero.v1.Claim
 	2,  // 3: pensiero.v1.EntailResult.best:type_name -> pensiero.v1.Proof
 	2,  // 4: pensiero.v1.EntailResult.all:type_name -> pensiero.v1.Proof
-	0,  // 5: pensiero.v1.ContradictsRequest.claim:type_name -> pensiero.v1.Claim
-	2,  // 6: pensiero.v1.ContradictsResponse.proof:type_name -> pensiero.v1.Proof
-	2,  // 7: pensiero.v1.DeriveResponse.proofs:type_name -> pensiero.v1.Proof
-	3,  // 8: pensiero.v1.ReasonerService.Entails:input_type -> pensiero.v1.EntailsRequest
-	5,  // 9: pensiero.v1.ReasonerService.Contradicts:input_type -> pensiero.v1.ContradictsRequest
-	7,  // 10: pensiero.v1.ReasonerService.Derive:input_type -> pensiero.v1.DeriveRequest
-	9,  // 11: pensiero.v1.ReasonerService.Health:input_type -> pensiero.v1.HealthRequest
-	4,  // 12: pensiero.v1.ReasonerService.Entails:output_type -> pensiero.v1.EntailResult
-	6,  // 13: pensiero.v1.ReasonerService.Contradicts:output_type -> pensiero.v1.ContradictsResponse
-	8,  // 14: pensiero.v1.ReasonerService.Derive:output_type -> pensiero.v1.DeriveResponse
-	10, // 15: pensiero.v1.ReasonerService.Health:output_type -> pensiero.v1.HealthResponse
-	12, // [12:16] is the sub-list for method output_type
-	8,  // [8:12] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	0,  // 5: pensiero.v1.FiredRule.consequent:type_name -> pensiero.v1.Claim
+	2,  // 6: pensiero.v1.FiredRule.proof:type_name -> pensiero.v1.Proof
+	0,  // 7: pensiero.v1.FireRulesRequest.assumed_facts:type_name -> pensiero.v1.Claim
+	5,  // 8: pensiero.v1.FireRulesResponse.fired:type_name -> pensiero.v1.FiredRule
+	0,  // 9: pensiero.v1.ContradictsRequest.claim:type_name -> pensiero.v1.Claim
+	2,  // 10: pensiero.v1.ContradictsResponse.proof:type_name -> pensiero.v1.Proof
+	2,  // 11: pensiero.v1.DeriveResponse.proofs:type_name -> pensiero.v1.Proof
+	3,  // 12: pensiero.v1.ReasonerService.Entails:input_type -> pensiero.v1.EntailsRequest
+	8,  // 13: pensiero.v1.ReasonerService.Contradicts:input_type -> pensiero.v1.ContradictsRequest
+	10, // 14: pensiero.v1.ReasonerService.Derive:input_type -> pensiero.v1.DeriveRequest
+	6,  // 15: pensiero.v1.ReasonerService.FireRules:input_type -> pensiero.v1.FireRulesRequest
+	12, // 16: pensiero.v1.ReasonerService.Health:input_type -> pensiero.v1.HealthRequest
+	4,  // 17: pensiero.v1.ReasonerService.Entails:output_type -> pensiero.v1.EntailResult
+	9,  // 18: pensiero.v1.ReasonerService.Contradicts:output_type -> pensiero.v1.ContradictsResponse
+	11, // 19: pensiero.v1.ReasonerService.Derive:output_type -> pensiero.v1.DeriveResponse
+	7,  // 20: pensiero.v1.ReasonerService.FireRules:output_type -> pensiero.v1.FireRulesResponse
+	13, // 21: pensiero.v1.ReasonerService.Health:output_type -> pensiero.v1.HealthResponse
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_pensiero_v1_reasoning_proto_init() }
@@ -825,7 +1013,7 @@ func file_pensiero_v1_reasoning_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pensiero_v1_reasoning_proto_rawDesc), len(file_pensiero_v1_reasoning_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

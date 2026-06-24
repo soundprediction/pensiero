@@ -96,7 +96,11 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 	cfg := serveReasoningConfig()
 	cache := newProofCache(provider, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
 	reasoner := newTelemetryReasonerWithLoad(cache, telemetry, load)
-	grpcsvc.NewServer(reasoner).Register(server)
+	gsrv := grpcsvc.NewServer(reasoner)
+	if mr := buildManagementReasoner(opts, reg, cfg, logger); mr != nil {
+		gsrv.SetRuleFirer(mr)
+	}
+	gsrv.Register(server)
 	runtime := &grpcReasoningRuntime{
 		server:          server,
 		store:           store,
@@ -127,6 +131,36 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		close(runtime.done)
 	}()
 	return runtime, nil
+}
+
+// buildManagementReasoner builds the forward-chaining reasoner over the shared
+// rules graph, used by the FireRules RPC to surface management rules (treatment
+// recommendations / contraindications) from a request's assumed facts. Conditions
+// are patient findings satisfied by the assumed facts, so no base reasoner / graph
+// oracle is needed. Returns nil when conditional rules or a rules graph are off.
+func buildManagementReasoner(opts serveOptions, reg *reasoning.PredicateRegistry, cfg reasoning.Config, logger *log.Logger) *reasoning.ConditionalReasoner {
+	if !opts.ConditionalRules || strings.TrimSpace(opts.RulesGraph) == "" {
+		return nil
+	}
+	pool, err := newPooledGraphQuerier(opts.RulesGraph, 1, nil)
+	if err != nil {
+		logger.Printf("management reasoner: open rules-graph %q: %v", opts.RulesGraph, err)
+		return nil
+	}
+	rules, stats, err := reasoning.LoadRulesFromGraph(context.Background(), pool)
+	_ = pool.Close()
+	if err != nil {
+		logger.Printf("management reasoner: load shared rules: %v", err)
+		return nil
+	}
+	ruleSet, err := reasoning.CompileRules(rules, reg)
+	if err != nil || ruleSet.Len() == 0 {
+		return nil
+	}
+	logger.Printf("management reasoner: forward-chaining over %d shared rules", ruleSet.Len())
+	_ = stats
+	oracle := reasoning.NewAssumedFactsOracle(nil, reg)
+	return reasoning.NewConditionalReasoner(nil, oracle, ruleSet, reg, reasoning.ConditionalConfig{Decay: cfg.Decay})
 }
 
 func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegistry) (generationBuilder, error) {

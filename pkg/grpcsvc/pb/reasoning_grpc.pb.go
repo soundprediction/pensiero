@@ -22,6 +22,7 @@ const (
 	ReasonerService_Entails_FullMethodName     = "/pensiero.v1.ReasonerService/Entails"
 	ReasonerService_Contradicts_FullMethodName = "/pensiero.v1.ReasonerService/Contradicts"
 	ReasonerService_Derive_FullMethodName      = "/pensiero.v1.ReasonerService/Derive"
+	ReasonerService_FireRules_FullMethodName   = "/pensiero.v1.ReasonerService/FireRules"
 	ReasonerService_Health_FullMethodName      = "/pensiero.v1.ReasonerService/Health"
 )
 
@@ -40,6 +41,11 @@ type ReasonerServiceClient interface {
 	Contradicts(ctx context.Context, in *ContradictsRequest, opts ...grpc.CallOption) (*ContradictsResponse, error)
 	// Derive returns ranked proof paths from Source toward Target (or any target).
 	Derive(ctx context.Context, in *DeriveRequest, opts ...grpc.CallOption) (*DeriveResponse, error)
+	// FireRules forward-chains over the conditional rules using per-request assumed
+	// facts (e.g. a patient's findings) and returns the consequents of every rule
+	// whose conditions hold and whose exceptions do not (e.g. recommendations,
+	// contraindications). Empty when no rules fire.
+	FireRules(ctx context.Context, in *FireRulesRequest, opts ...grpc.CallOption) (*FireRulesResponse, error)
 	// Health is a liveness probe.
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 }
@@ -82,6 +88,16 @@ func (c *reasonerServiceClient) Derive(ctx context.Context, in *DeriveRequest, o
 	return out, nil
 }
 
+func (c *reasonerServiceClient) FireRules(ctx context.Context, in *FireRulesRequest, opts ...grpc.CallOption) (*FireRulesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FireRulesResponse)
+	err := c.cc.Invoke(ctx, ReasonerService_FireRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *reasonerServiceClient) Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthResponse)
@@ -107,6 +123,11 @@ type ReasonerServiceServer interface {
 	Contradicts(context.Context, *ContradictsRequest) (*ContradictsResponse, error)
 	// Derive returns ranked proof paths from Source toward Target (or any target).
 	Derive(context.Context, *DeriveRequest) (*DeriveResponse, error)
+	// FireRules forward-chains over the conditional rules using per-request assumed
+	// facts (e.g. a patient's findings) and returns the consequents of every rule
+	// whose conditions hold and whose exceptions do not (e.g. recommendations,
+	// contraindications). Empty when no rules fire.
+	FireRules(context.Context, *FireRulesRequest) (*FireRulesResponse, error)
 	// Health is a liveness probe.
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	mustEmbedUnimplementedReasonerServiceServer()
@@ -127,6 +148,9 @@ func (UnimplementedReasonerServiceServer) Contradicts(context.Context, *Contradi
 }
 func (UnimplementedReasonerServiceServer) Derive(context.Context, *DeriveRequest) (*DeriveResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Derive not implemented")
+}
+func (UnimplementedReasonerServiceServer) FireRules(context.Context, *FireRulesRequest) (*FireRulesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FireRules not implemented")
 }
 func (UnimplementedReasonerServiceServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -206,6 +230,24 @@ func _ReasonerService_Derive_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ReasonerService_FireRules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FireRulesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReasonerServiceServer).FireRules(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReasonerService_FireRules_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReasonerServiceServer).FireRules(ctx, req.(*FireRulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ReasonerService_Health_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(HealthRequest)
 	if err := dec(in); err != nil {
@@ -242,6 +284,10 @@ var ReasonerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Derive",
 			Handler:    _ReasonerService_Derive_Handler,
+		},
+		{
+			MethodName: "FireRules",
+			Handler:    _ReasonerService_FireRules_Handler,
 		},
 		{
 			MethodName: "Health",

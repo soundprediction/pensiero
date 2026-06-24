@@ -17,14 +17,38 @@ import (
 // ServiceName is the fully-qualified gRPC service name.
 var ServiceName = pb.ReasonerService_ServiceDesc.ServiceName
 
+// RuleFirer forward-chains conditional rules from per-request assumed facts.
+type RuleFirer interface {
+	FireRules(ctx context.Context, maxRules int) ([]reasoning.FiredRule, error)
+}
+
 // Server adapts a reasoning.Reasoner to the generated ReasonerServiceServer.
 type Server struct {
 	pb.UnimplementedReasonerServiceServer
-	r reasoning.Reasoner
+	r     reasoning.Reasoner
+	firer RuleFirer
 }
 
 // NewServer wraps a reasoner for gRPC serving.
 func NewServer(r reasoning.Reasoner) *Server { return &Server{r: r} }
+
+// SetRuleFirer wires the forward-chaining management reasoner (over the shared
+// rules) used by the FireRules RPC. Optional; FireRules returns empty if unset.
+func (s *Server) SetRuleFirer(f RuleFirer) { s.firer = f }
+
+func (s *Server) FireRules(ctx context.Context, req *pb.FireRulesRequest) (*pb.FireRulesResponse, error) {
+	if s.firer == nil {
+		return &pb.FireRulesResponse{}, nil
+	}
+	if facts := claimsFromProto(req.GetAssumedFacts()); len(facts) > 0 {
+		ctx = reasoning.WithAssumedFacts(ctx, facts)
+	}
+	fired, err := s.firer.FireRules(ctx, int(req.GetMaxRules()))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.FireRulesResponse{Fired: firedRulesToProto(fired)}, nil
+}
 
 func (s *Server) Entails(ctx context.Context, req *pb.EntailsRequest) (*pb.EntailResult, error) {
 	if facts := claimsFromProto(req.GetAssumedFacts()); len(facts) > 0 {

@@ -62,6 +62,20 @@ func (c *Client) Contradicts(ctx context.Context, claim reasoning.Claim) (bool, 
 	return res.GetContradicts(), proofPtrFromProto(res.GetProof()), nil
 }
 
+// FireRules forward-chains the daemon's conditional rules over the given assumed
+// facts (e.g. a patient's findings) and returns the consequents of every rule
+// that fires (recommendations, contraindications, …).
+func (c *Client) FireRules(ctx context.Context, assumedFacts []reasoning.Claim, maxRules int) ([]reasoning.FiredRule, error) {
+	res, err := c.rc.FireRules(ctx, &pb.FireRulesRequest{
+		AssumedFacts: claimsToProto(assumedFacts),
+		MaxRules:     int32(maxRules),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return firedRulesFromProto(res.GetFired()), nil
+}
+
 // Derive returns ranked proof paths from Source toward Target.
 func (c *Client) Derive(ctx context.Context, req reasoning.DeriveRequest) ([]reasoning.Proof, error) {
 	res, err := c.rc.Derive(ctx, deriveReqToProto(req))
