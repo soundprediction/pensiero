@@ -113,7 +113,7 @@ func TestTopicSelectorWeightingAndRandomFloor(t *testing.T) {
 	defer store.Close()
 	floor := NewTopicSelector(store, nil, reg, nil, TopicSelectorConfig{
 		QueryHotWeight:   0,
-		RandomWeight:     0,
+		RandomWeight:     1,
 		UnresolvedWeight: 0,
 		SemanticWeight:   0,
 		Random:           rand.New(rand.NewSource(3)),

@@ -127,8 +127,8 @@ func normalizeTopicSelectorConfig(cfg TopicSelectorConfig) TopicSelectorConfig {
 	if cfg.BridgeWeight < 0 {
 		cfg.BridgeWeight = 0
 	}
-	if cfg.RandomWeight <= 0 {
-		cfg.RandomWeight = 1
+	if cfg.RandomWeight < 0 {
+		cfg.RandomWeight = 0
 	}
 	if cfg.HotKeyLimit <= 0 {
 		cfg.HotKeyLimit = defaultTopicHotKeyLimit
@@ -257,7 +257,7 @@ func (s *queryHotThoughtSource) Next(ctx context.Context) (Thought, bool, error)
 	for i := 0; i < len(keys); i++ {
 		key := keys[(start+i)%len(keys)]
 		claim := claimFromHotKey(key)
-		if claimDedupeKey(claim) == "" {
+		if claimDedupeKey(claim) == "" || !plausibleClaim(claim) {
 			continue
 		}
 		return Thought{
@@ -305,7 +305,7 @@ func (s *unresolvedThoughtSource) Next(ctx context.Context) (Thought, bool, erro
 	start := s.advance(len(claims))
 	for i := 0; i < len(claims); i++ {
 		item := claims[(start+i)%len(claims)]
-		if claimDedupeKey(item.Claim) == "" {
+		if claimDedupeKey(item.Claim) == "" || !plausibleClaim(item.Claim) {
 			continue
 		}
 		return Thought{
@@ -641,6 +641,9 @@ func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, r
 	if err != nil {
 		return Thought{}, false, err
 	}
+	if !plausibleEntityName(seed) {
+		return Thought{}, false, nil
+	}
 	var (
 		object    string
 		predicate string
@@ -648,7 +651,7 @@ func (s *bridgeThoughtSource) bridgeFromSeed(ctx context.Context, seed string, r
 	)
 	for _, row := range rows {
 		name := strings.TrimSpace(rowString(row, "name"))
-		if name == "" || lowerKey(name) == lowerKey(seed) {
+		if name == "" || lowerKey(name) == lowerKey(seed) || !plausibleEntityName(name) {
 			continue
 		}
 		pred := normalizePredicateLabel(rowString(row, "predicate"))
@@ -1048,6 +1051,35 @@ func rowFloat(row map[string]any, key string) float64 {
 // CAUSES) to the canonical form claims use; the reasoner matches case-folded.
 func normalizePredicateLabel(p string) string {
 	return strings.ToLower(strings.TrimSpace(p))
+}
+
+// implausibleEntityFragments are tell-tales of LLM-generated, sentence-like
+// "entities" that leak in from the chat/DDx pipeline (not real ontology nodes).
+// Cognition skips claims containing them so /thinking and /questions stay clean.
+var implausibleEntityFragments = []string{
+	" on a patient", " started on ", " especially ", "-induced ", " due to a ",
+	" in the setting of ", " secondary to ", " as a result of ",
+}
+
+// plausibleEntityName rejects empty, overly long, or sentence-like entity names.
+// Real ontology entities are short noun phrases; clause-bearing strings are
+// pipeline artifacts.
+func plausibleEntityName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 72 {
+		return false
+	}
+	low := strings.ToLower(name)
+	for _, frag := range implausibleEntityFragments {
+		if strings.Contains(low, frag) {
+			return false
+		}
+	}
+	return true
+}
+
+func plausibleClaim(claim reasoning.Claim) bool {
+	return plausibleEntityName(claim.Subject) && plausibleEntityName(claim.Object)
 }
 
 func lowerKey(s string) string {
