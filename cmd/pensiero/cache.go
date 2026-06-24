@@ -7,12 +7,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/soundprediction/pensiero/pkg/reasoning"
 )
+
+// proofCacheDebug logs each Entails (claim, assumed-fact count, cache status,
+// verdict) when PENSIERO_ENTAILS_DEBUG=1 — for diagnosing rule firing.
+var proofCacheDebug = os.Getenv("PENSIERO_ENTAILS_DEBUG") == "1"
 
 const (
 	defaultProofCacheMaxEntries = 1024
@@ -74,6 +80,10 @@ type proofCacheKeyMaterial struct {
 	Config              proofCacheConfigKey  `json:"config"`
 	Claim               *proofCacheClaimKey  `json:"claim,omitempty"`
 	Derive              *proofCacheDeriveKey `json:"derive,omitempty"`
+	// AssumedFacts are per-request ground facts (e.g. patient findings) that can
+	// change the verdict for the same claim, so they MUST participate in the cache
+	// key — otherwise different patients would share a cached result.
+	AssumedFacts []proofCacheClaimKey `json:"assumed_facts,omitempty"`
 }
 
 type proofCacheClaimKey struct {
@@ -155,12 +165,13 @@ func (c *proofCache) Derive(ctx context.Context, req reasoning.DeriveRequest) ([
 
 func (c *proofCache) Entails(ctx context.Context, claim reasoning.Claim) (reasoning.EntailResult, error) {
 	claim = c.normalizeClaim(claim)
+	assumed := reasoning.AssumedFactsFromContext(ctx)
 	gen, release, err := c.acquire(ctx, generationRoute{Text: routeText(claim.Subject, claim.Object)})
 	if err != nil {
 		setQueryCacheStatus(ctx, queryCacheStatusMiss)
 		return reasoning.EntailResult{}, err
 	}
-	key := c.claimKey(gen, "Entails", claim)
+	key := c.claimKey(gen, "Entails", claim, assumed)
 	setQueryCacheKey(ctx, key)
 	value, status, err := c.loadOrCompute(ctx, key.hash, release, func() (proofCacheValue, error) {
 		reasoner := reasoning.NewPredicateConstrained(gen.reasoner, c.reg)
@@ -174,7 +185,12 @@ func (c *proofCache) Entails(ctx context.Context, claim reasoning.Claim) (reason
 	if err != nil {
 		return reasoning.EntailResult{}, err
 	}
-	return cloneEntailResult(value.entail), nil
+	out := cloneEntailResult(value.entail)
+	if proofCacheDebug {
+		log.Printf("[pensiero-entails] gen=%s claim=(%q %q %q) assumed=%d cache=%s verdict=%s conf=%.3f",
+			gen.id, claim.Subject, claim.Predicate, claim.Object, len(assumed), status, out.Verdict, out.Confidence)
+	}
+	return out, nil
 }
 
 func (c *proofCache) Contradicts(ctx context.Context, claim reasoning.Claim) (bool, *reasoning.Proof, error) {
@@ -184,7 +200,7 @@ func (c *proofCache) Contradicts(ctx context.Context, claim reasoning.Claim) (bo
 		setQueryCacheStatus(ctx, queryCacheStatusMiss)
 		return false, nil, err
 	}
-	key := c.claimKey(gen, "Contradicts", claim)
+	key := c.claimKey(gen, "Contradicts", claim, reasoning.AssumedFactsFromContext(ctx))
 	setQueryCacheKey(ctx, key)
 	value, status, err := c.loadOrCompute(ctx, key.hash, release, func() (proofCacheValue, error) {
 		reasoner := reasoning.NewPredicateConstrained(gen.reasoner, c.reg)
@@ -325,7 +341,7 @@ func (c *proofCache) insert(hash string, value proofCacheValue) {
 	}
 }
 
-func (c *proofCache) claimKey(gen *generation, method string, claim reasoning.Claim) proofCacheKey {
+func (c *proofCache) claimKey(gen *generation, method string, claim reasoning.Claim, assumed []reasoning.Claim) proofCacheKey {
 	claim = c.normalizeClaim(claim)
 	normalized := proofCacheClaimKey{
 		Subject:   claim.Subject,
@@ -339,6 +355,7 @@ func (c *proofCache) claimKey(gen *generation, method string, claim reasoning.Cl
 		Backend:             gen.reasoner.Name(),
 		Config:              c.cfg,
 		Claim:               &normalized,
+		AssumedFacts:        c.assumedFactsKey(assumed),
 	}
 	return proofCacheKey{
 		hash:       hashCacheKey(material),
@@ -347,6 +364,29 @@ func (c *proofCache) claimKey(gen *generation, method string, claim reasoning.Cl
 		subject:    normalized.Subject,
 		object:     normalized.Object,
 	}
+}
+
+// assumedFactsKey normalizes and deterministically orders per-request assumed
+// facts so they contribute stably to the cache key.
+func (c *proofCache) assumedFactsKey(facts []reasoning.Claim) []proofCacheClaimKey {
+	if len(facts) == 0 {
+		return nil
+	}
+	out := make([]proofCacheClaimKey, 0, len(facts))
+	for _, f := range facts {
+		f = c.normalizeClaim(f)
+		out = append(out, proofCacheClaimKey{Subject: f.Subject, Predicate: f.Predicate, Object: f.Object})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Subject != out[j].Subject {
+			return out[i].Subject < out[j].Subject
+		}
+		if out[i].Predicate != out[j].Predicate {
+			return out[i].Predicate < out[j].Predicate
+		}
+		return out[i].Object < out[j].Object
+	})
+	return out
 }
 
 func (c *proofCache) normalizeClaim(claim reasoning.Claim) reasoning.Claim {

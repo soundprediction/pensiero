@@ -40,6 +40,14 @@ func (r *predicateConstrainedReasoner) Entails(ctx context.Context, c Claim) (En
 	if res.Best == nil {
 		return EntailResult{Verdict: VerdictUnsupported}, nil
 	}
+	// A conditional-rule proof already matches the claim's predicate by
+	// construction (the rule consequent IS the claim). Its step chain mixes the
+	// condition predicate(s) with the consequent predicate, so it is not a single
+	// coherent predicate path and must not be subjected to the path-predicate
+	// entailment check (which would reject the valid conclusion).
+	if res.Best.RuleClass == "conditional" {
+		return res, nil
+	}
 	effective, ok := effectivePredicate(r.reg, res.Best.Steps)
 	target := canonicalPredicate(r.reg, c.Predicate)
 	if !ok || !proofEntailsPredicate(r.reg, effective, target, true) {
