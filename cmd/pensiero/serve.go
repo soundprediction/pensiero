@@ -325,11 +325,14 @@ func defaultServeOptions() serveOptions {
 		InventorySample:   envInt("PENSIERO_INVENTORY_SAMPLE", defaultPredicateInventorySample),
 		CognitionMax:      envInt("PENSIERO_COGNITION_MAX_THOUGHTS", defaultCognitionMaxThoughts),
 		// Cognition should mostly emit questions that help the graph generalize
-		// (and thereby shrink), so the question-generating sources (bridge,
-		// unresolved-contradiction, neighborhood, semantic) outweigh proof
-		// precompute, which only warms the cache and asks nothing.
+		// (factorize through shared generalizations). The random/neighborhood
+		// source is OFF by default: it proposed type-incoherent direct edges
+		// (e.g. drug "treats" drug, backwards causation) which are off-objective
+		// and read as nonsense. Idle generation is covered by the factorization
+		// (bridge) source over rotating topics; unresolved/query-hot operate on
+		// real humn claims.
 		QueryHotWeight:    envInt("PENSIERO_COGNITION_QUERY_HOT_WEIGHT", 1),
-		RandomWeight:      envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 2),
+		RandomWeight:      envInt("PENSIERO_COGNITION_RANDOM_WEIGHT", 0),
 		UnresolvedWeight:  envInt("PENSIERO_COGNITION_UNRESOLVED_WEIGHT", 2),
 		SemanticWeight:    envInt("PENSIERO_COGNITION_SEMANTIC_WEIGHT", 1),
 		BridgeWeight:      envInt("PENSIERO_COGNITION_BRIDGE_WEIGHT", 3),
