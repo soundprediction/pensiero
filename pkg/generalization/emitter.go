@@ -96,6 +96,13 @@ CREATE REL TABLE IF NOT EXISTS RELATES_TO(
 }
 
 func (e *CypherEmitter) createNode(ctx context.Context, node Node) error {
+	exists, err := e.nodeExists(ctx, node.ID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
 	attrs, err := json.Marshal(map[string]any{
 		"kind":    node.Kind,
 		"depth":   node.Depth,
@@ -130,6 +137,18 @@ CREATE (n:Entity {
 		return fmt.Errorf("generalization node emit %q: %w", node.ID, err)
 	}
 	return nil
+}
+
+func (e *CypherEmitter) nodeExists(ctx context.Context, id string) (bool, error) {
+	rows, err := e.target.Query(ctx, `
+MATCH (n:Entity {uuid: $uuid})
+RETURN n.uuid AS uuid
+LIMIT 1
+`, map[string]any{"uuid": id})
+	if err != nil {
+		return false, fmt.Errorf("generalization node lookup %q: %w", id, err)
+	}
+	return len(rows) > 0, nil
 }
 
 func (e *CypherEmitter) createRelation(ctx context.Context, rel Relation) error {

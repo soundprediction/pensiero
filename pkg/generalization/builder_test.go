@@ -210,6 +210,47 @@ func TestBuildLiftsSharedRelationAtMinSupport(t *testing.T) {
 	}
 }
 
+func TestDroppedRelationsReadsAllPredicatesAndDiffsByRelationKey(t *testing.T) {
+	ctx := context.Background()
+	src := fakeSource{
+		direct: []map[string]any{
+			relRow("e1", "A", "R", "Y"),
+			relRow("e2", "A", "S", "Z"),
+			relRow("e3", "B", "T", "Y"),
+		},
+	}
+	graph := &Graph{
+		Relations: []Relation{
+			{
+				ID:         "kept",
+				SourceName: "a",
+				Predicate:  "r",
+				TargetName: "y",
+			},
+			{
+				ID:         "lifted",
+				SourceName: "B",
+				Predicate:  "T",
+				TargetName: "Y",
+				Lifted:     true,
+			},
+		},
+	}
+	dropped, err := DroppedRelations(ctx, src, testRegistry(), Config{
+		ScopeEntities: []string{"A", "B"},
+		Predicates:    []string{"R"},
+	}, graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 1 {
+		t.Fatalf("dropped relations = %#v, want only e2", dropped)
+	}
+	if dropped[0].ID != "e2" || dropped[0].SourceName != "A" || dropped[0].Predicate != "S" || dropped[0].TargetName != "Z" {
+		t.Fatalf("dropped relation = %#v, want A S Z", dropped[0])
+	}
+}
+
 func TestBuildLiftsRelationThroughDirectHierarchy(t *testing.T) {
 	ctx := context.Background()
 	src := fakeSource{
@@ -367,6 +408,8 @@ func (f fakeSource) Query(_ context.Context, query string, params map[string]any
 	switch {
 	case hasParam(params, "taxonomic"):
 		return filterTaxonomy(f.taxonomy, params), nil
+	case strings.Contains(query, "RETURN DISTINCT r.name AS predicate"):
+		return distinctDirectPredicates(f.direct), nil
 	case strings.Contains(query, "RelatesToNode_"):
 		return filterDirect(f.direct, params), nil
 	case strings.Contains(query, "MATCH (n:Entity)"):
@@ -374,6 +417,21 @@ func (f fakeSource) Query(_ context.Context, query string, params map[string]any
 	default:
 		return nil, nil
 	}
+}
+
+func distinctDirectPredicates(rows []map[string]any) []map[string]any {
+	set := map[string]bool{}
+	for _, row := range rows {
+		if predicate := firstString(row, "predicate", "name"); predicate != "" {
+			set[predicate] = true
+		}
+	}
+	predicates := sortedKeys(set)
+	out := make([]map[string]any, 0, len(predicates))
+	for _, predicate := range predicates {
+		out = append(out, map[string]any{"predicate": predicate})
+	}
+	return out
 }
 
 type cancelAfterFirstTaxonomyQuerySource struct {

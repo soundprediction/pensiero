@@ -45,12 +45,13 @@ func run(args []string) error {
 func runBuildGeneralization(args []string) error {
 	fs := flag.NewFlagSet("build-generalization", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var sourcePath, scope, scopeFile, outPath, predicateCSV, predicatePacksCSV, typePacksCSV, taxonomicCSV, taxonomicDirection, registrySpec string
+	var sourcePath, scope, scopeFile, outPath, backupPath, predicateCSV, predicatePacksCSV, typePacksCSV, taxonomicCSV, taxonomicDirection, registrySpec string
 	var minSupport, maxParentLevel int
 	fs.StringVar(&sourcePath, "source", "", "source graph path")
 	fs.StringVar(&scope, "scope", "", "scope name")
 	fs.StringVar(&scopeFile, "scope-entities", "", "file with scope entity ids or names")
 	fs.StringVar(&outPath, "out", "", "output graph path")
+	fs.StringVar(&backupPath, "backup-db", "", "backup graph path for dropped edges; empty disables")
 	fs.IntVar(&minSupport, "min-support", generalization.DefaultMinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&maxParentLevel, "max-parent-level", generalization.DefaultMaxParentLevel, "maximum parent depth to keep")
 	fs.StringVar(&predicateCSV, "predicates", "", "comma-separated predicates; empty uses registry-derived predicates")
@@ -145,11 +146,47 @@ func runBuildGeneralization(args []string) error {
 	}
 	published = true
 	printStats(graph)
+	backupPath = strings.TrimSpace(backupPath)
+	if backupPath != "" {
+		backupDroppedEdges(ctx, source, reg, cfg, graph, backupPath)
+	}
 	return nil
 }
 
 func usageError() error {
-	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--type-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--igl-quiet 3s] [--igl-min-publish 30s] [--leader-mode flock|none|k8s-lease] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path] [--golden-file file] [--predicate-packs list] [--type-packs list] [--inventory-sample n]\n       pensiero serve --source-dir <dir> --grpc-addr <addr> [--default-topic topic] [--max-open-topics n] [--health-addr addr]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
+	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--backup-db <dropped.ladybug>] [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--type-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--igl-quiet 3s] [--igl-min-publish 30s] [--leader-mode flock|none|k8s-lease] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path] [--golden-file file] [--predicate-packs list] [--type-packs list] [--inventory-sample n]\n       pensiero serve --source-dir <dir> --grpc-addr <addr> [--default-topic topic] [--max-open-topics n] [--health-addr addr]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
+}
+
+func backupDroppedEdges(ctx context.Context, source reasoning.GraphQuerier, reg *reasoning.PredicateRegistry, cfg generalization.Config, graph *generalization.Graph, backupPath string) {
+	dropped, err := generalization.DroppedRelations(ctx, source, reg, cfg, graph)
+	if err != nil {
+		warnDroppedEdgeBackup("compute dropped edges: %v", err)
+		return
+	}
+	if len(dropped) == 0 {
+		fmt.Fprintf(os.Stderr, "backed up 0 dropped edges to %s\n", backupPath)
+		return
+	}
+	target, err := openLadybugGraph(backupPath, false)
+	if err != nil {
+		warnDroppedEdgeBackup("open %s: %v", backupPath, err)
+		return
+	}
+	recordErr := generalization.NewCypherDroppedEdgeBackup(target).Record(ctx, cfg.Scope, dropped)
+	closeErr := target.Close()
+	if recordErr != nil {
+		warnDroppedEdgeBackup("record to %s: %v", backupPath, recordErr)
+		return
+	}
+	if closeErr != nil {
+		warnDroppedEdgeBackup("close %s: %v", backupPath, closeErr)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "backed up %d dropped edges to %s\n", len(dropped), backupPath)
+}
+
+func warnDroppedEdgeBackup(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "warning: dropped-edge backup: "+format+"\n", args...)
 }
 
 func readScopeEntities(path string) ([]string, error) {
