@@ -27,6 +27,9 @@ type Server struct {
 func NewServer(r reasoning.Reasoner) *Server { return &Server{r: r} }
 
 func (s *Server) Entails(ctx context.Context, req *pb.EntailsRequest) (*pb.EntailResult, error) {
+	if facts := claimsFromProto(req.GetAssumedFacts()); len(facts) > 0 {
+		ctx = reasoning.WithAssumedFacts(ctx, facts)
+	}
 	res, err := s.r.Entails(ctx, claimFromProto(req.GetClaim()))
 	if err != nil {
 		return nil, err

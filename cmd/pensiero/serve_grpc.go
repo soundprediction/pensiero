@@ -159,7 +159,11 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 				return nil, err
 			}
 			if ruleSet.Len() > 0 {
-				oracle := reasoning.NewGraphConditionOracle(pool, reasoner, reg, cfg)
+				// Per-request assumed facts (e.g. a patient's findings, sent over the
+				// gRPC seam) ground rule conditions for one request without any graph
+				// write; the graph oracle handles the rest.
+				oracle := reasoning.NewAssumedFactsOracle(
+					reasoning.NewGraphConditionOracle(pool, reasoner, reg, cfg), reg)
 				reasoner = reasoning.NewConditionalReasoner(reasoner, oracle, ruleSet, reg, reasoning.ConditionalConfig{
 					Decay: cfg.Decay,
 				})

@@ -41,7 +41,12 @@ func NewClientConn(cc *grpc.ClientConn) *Client {
 
 // Entails decides whether a claim is symbolically supported/contradicted.
 func (c *Client) Entails(ctx context.Context, claim reasoning.Claim) (reasoning.EntailResult, error) {
-	res, err := c.rc.Entails(ctx, &pb.EntailsRequest{Claim: claimToProto(claim)})
+	// Forward any per-request assumed facts (e.g. patient findings) the host set
+	// on the context so the daemon can ground rule conditions for this request.
+	res, err := c.rc.Entails(ctx, &pb.EntailsRequest{
+		Claim:        claimToProto(claim),
+		AssumedFacts: claimsToProto(reasoning.AssumedFactsFromContext(ctx)),
+	})
 	if err != nil {
 		return reasoning.EntailResult{}, err
 	}

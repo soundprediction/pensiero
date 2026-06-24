@@ -18,11 +18,12 @@ import (
 func runReasonCheck(args []string) error {
 	fs := flag.NewFlagSet("reason-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var graphPath, claimSpec, backend, reasoningExt string
+	var graphPath, claimSpec, backend, reasoningExt, assumeSpec string
 	fs.StringVar(&graphPath, "graph", "", "ladybug graph path (read-only)")
 	fs.StringVar(&claimSpec, "claim", "", `claim to test as "subject|predicate|object"`)
 	fs.StringVar(&backend, "backend", reasoning.NativeBackendName, "ladybug-native or symbolic-graph")
 	fs.StringVar(&reasoningExt, "reasoning-extension", "reasoning", "reasoning extension path/name (ladybug-native only)")
+	fs.StringVar(&assumeSpec, "assume", "", `per-request assumed facts, comma-separated "s|p|o" (e.g. patient context)`)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -78,10 +79,22 @@ func runReasonCheck(args []string) error {
 
 	reasoner := reasoning.Reasoner(base)
 	if ruleSet.Len() > 0 {
-		oracle := reasoning.NewGraphConditionOracle(gh, base, reg, cfg)
+		oracle := reasoning.NewAssumedFactsOracle(reasoning.NewGraphConditionOracle(gh, base, reg, cfg), reg)
 		reasoner = reasoning.NewConditionalReasoner(base, oracle, ruleSet, reg, reasoning.ConditionalConfig{Decay: cfg.Decay})
 	}
 	_ = stats
+
+	if assumeSpec != "" {
+		var facts []reasoning.Claim
+		for _, spec := range strings.Split(assumeSpec, ",") {
+			p := strings.SplitN(strings.TrimSpace(spec), "|", 3)
+			if len(p) == 3 {
+				facts = append(facts, reasoning.Claim{Subject: strings.TrimSpace(p[0]), Predicate: strings.TrimSpace(p[1]), Object: strings.TrimSpace(p[2])})
+			}
+		}
+		ctx = reasoning.WithAssumedFacts(ctx, facts)
+		fmt.Printf("assumed facts: %d\n", len(facts))
+	}
 
 	result, err := reasoner.Entails(ctx, claim)
 	if err != nil {

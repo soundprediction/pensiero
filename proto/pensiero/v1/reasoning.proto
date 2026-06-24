@@ -44,7 +44,13 @@ message Proof {
   double confidence = 7;
 }
 
-message EntailsRequest { Claim claim = 1; }
+message EntailsRequest {
+  Claim claim = 1;
+  // assumed_facts are per-request ground facts (e.g. a patient's findings as
+  // (finding, present, patient)) the conditional reasoner may use to satisfy rule
+  // conditions for THIS request only — they are not written to the graph.
+  repeated Claim assumed_facts = 2;
+}
 
 message EntailResult {
   Proof best = 1;        // nil when no proof
