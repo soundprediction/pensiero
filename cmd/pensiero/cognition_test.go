@@ -492,10 +492,161 @@ func TestRandomSourceIsolatedSeedYieldsNothing(t *testing.T) {
 	}
 }
 
+func TestBridgeSourceGeneralizationCandidate(t *testing.T) {
+	store := newTopicTestStore([]string{"Hypertension", "Arrhythmia", "Tachycardia"})
+	defer store.Close()
+	src := newBridgeThoughtSource(store, 4, rand.New(rand.NewSource(5)))
+
+	thought, ok, err := src.Next(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("Next ok=%v err=%v", ok, err)
+	}
+	if thought.Type != ThoughtGeneralizationBridge || thought.Source != "bridge" {
+		t.Fatalf("thought=%#v, want factorize thought", thought)
+	}
+	// The densest co-connected partner must be chosen (sparse one ignored).
+	if thought.Claim.Object != "dense-partner" {
+		t.Fatalf("object=%q, want 'dense-partner' (densest shared-neighbour block)", thought.Claim.Object)
+	}
+	if thought.Claim.Predicate != "shares_generalization_with:head:causes" {
+		t.Fatalf("predicate=%q, want head/predicate-specific generalization framing", thought.Claim.Predicate)
+	}
+	if g, _ := thought.Meta["expected_gain"].(float64); g <= 0.5 {
+		t.Fatalf("expected_gain=%v, want gain scaled by shared-neighbour density", thought.Meta["expected_gain"])
+	}
+	if thought.Meta["predicate"] != "causes" || thought.Meta["role"] != "head" {
+		t.Fatalf("meta=%#v, want normalized predicate and head role", thought.Meta)
+	}
+
+	// Execute must emit a question (not assert an edge, not run entailment).
+	qs := newQuestionStore(8, nil)
+	eng := &ThoughtEngine{Reasoner: testReasoner{name: "b"}, Questions: qs}
+	if err := eng.Execute(context.Background(), thought); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if qs.Count() != 1 {
+		t.Fatalf("questions=%d, want 1 generalization question", qs.Count())
+	}
+	if got := qs.Snapshot().Questions[0].Rationale; !strings.Contains(got, "predicate=CAUSES role=head") {
+		t.Fatalf("rationale=%q, want dimension-specific rationale from thought", got)
+	}
+}
+
+func TestBridgeSourceHeadAndTailSyntheticPredicates(t *testing.T) {
+	store := newBridgeTestStore(
+		[]string{"head-seed", "tail-seed", "other-seed"},
+		[]map[string]any{{"predicate": "CAUSES", "name": "head-partner", "shared": int64(12)}},
+		[]map[string]any{{"predicate": "TREATS", "name": "tail-partner", "shared": int64(10)}},
+	)
+	defer store.Close()
+	src := newBridgeThoughtSource(store, 4, rand.New(rand.NewSource(1)))
+
+	head, ok, err := src.bridgeFromSeed(context.Background(), "head-seed", bridgeRoleHead)
+	if err != nil || !ok {
+		t.Fatalf("head bridgeFromSeed ok=%v err=%v", ok, err)
+	}
+	if head.Claim.Predicate != "shares_generalization_with:head:causes" {
+		t.Fatalf("head predicate=%q, want head-specific predicate", head.Claim.Predicate)
+	}
+	if head.Meta["predicate"] != "causes" || head.Meta["role"] != "head" {
+		t.Fatalf("head meta=%#v, want predicate=causes role=head", head.Meta)
+	}
+
+	tail, ok, err := src.bridgeFromSeed(context.Background(), "tail-seed", bridgeRoleTail)
+	if err != nil || !ok {
+		t.Fatalf("tail bridgeFromSeed ok=%v err=%v", ok, err)
+	}
+	if tail.Claim.Predicate != "shares_generalization_with:tail:treats" {
+		t.Fatalf("tail predicate=%q, want tail-specific predicate", tail.Claim.Predicate)
+	}
+	if tail.Meta["predicate"] != "treats" || tail.Meta["role"] != "tail" {
+		t.Fatalf("tail meta=%#v, want predicate=treats role=tail", tail.Meta)
+	}
+	if !strings.Contains(tail.Rationale, "role=tail") || !strings.Contains(tail.Rationale, "sources") {
+		t.Fatalf("tail rationale=%q, want role and source-side wording", tail.Rationale)
+	}
+}
+
+func TestBridgeSourcePredicateDimensionDedupe(t *testing.T) {
+	var headCalls int
+	handle := &fakeGraphHandle{
+		query: func(_ context.Context, query string, _ map[string]any) ([]map[string]any, error) {
+			if isBridgeHeadQuery(query) {
+				headCalls++
+				if headCalls == 1 {
+					return []map[string]any{{"predicate": "CAUSES", "name": "same-partner", "shared": int64(9)}}, nil
+				}
+				return []map[string]any{{"predicate": "TREATS", "name": "same-partner", "shared": int64(9)}}, nil
+			}
+			return topicNameRows([]string{"same-seed", "same-partner", "other-seed"}), nil
+		},
+	}
+	store := newGenerationStore(&generation{id: "bridge-dedupe", pool: newTestPool(handle), reasoner: testReasoner{name: "bridge-dedupe"}, path: "bridge-dedupe"})
+	defer store.Close()
+	src := newBridgeThoughtSource(store, 4, rand.New(rand.NewSource(1)))
+
+	first, ok, err := src.bridgeFromSeed(context.Background(), "same-seed", bridgeRoleHead)
+	if err != nil || !ok {
+		t.Fatalf("first bridgeFromSeed ok=%v err=%v", ok, err)
+	}
+	second, ok, err := src.bridgeFromSeed(context.Background(), "same-seed", bridgeRoleHead)
+	if err != nil || !ok {
+		t.Fatalf("second bridgeFromSeed ok=%v err=%v", ok, err)
+	}
+	if first.Claim.Subject != second.Claim.Subject || first.Claim.Object != second.Claim.Object || first.Claim.Predicate == second.Claim.Predicate {
+		t.Fatalf("claims first=%#v second=%#v, want same pair with distinct predicate dimensions", first.Claim, second.Claim)
+	}
+
+	qs := newQuestionStore(8, nil)
+	eng := &ThoughtEngine{Reasoner: testReasoner{name: "bridge-dedupe"}, Questions: qs}
+	if err := eng.Execute(context.Background(), first); err != nil {
+		t.Fatalf("Execute first: %v", err)
+	}
+	if err := eng.Execute(context.Background(), second); err != nil {
+		t.Fatalf("Execute second: %v", err)
+	}
+	if qs.Count() != 2 {
+		t.Fatalf("questions=%d, want two dimension-distinct questions for the same entity pair", qs.Count())
+	}
+}
+
+func TestBridgeSourceBelowThresholdIgnored(t *testing.T) {
+	store := newBridgeTestStore(
+		[]string{"seed", "other", "third"},
+		[]map[string]any{{"predicate": "CAUSES", "name": "too-sparse", "shared": int64(minSharedForFactor - 1)}},
+		nil,
+	)
+	defer store.Close()
+	src := newBridgeThoughtSource(store, 4, rand.New(rand.NewSource(1)))
+
+	if _, ok, err := src.bridgeFromSeed(context.Background(), "seed", bridgeRoleHead); err != nil || ok {
+		t.Fatalf("bridgeFromSeed ok=%v err=%v, want below-threshold row ignored", ok, err)
+	}
+}
+
 func newTopicTestStore(names []string) *generationStore {
+	return newBridgeTestStore(
+		names,
+		[]map[string]any{
+			{"predicate": "CAUSES", "name": "sparse-partner", "shared": int64(1)},
+			{"predicate": "CAUSES", "name": "dense-partner", "shared": int64(42)},
+		},
+		[]map[string]any{
+			{"predicate": "TREATS", "name": "dense-tail-partner", "shared": int64(38)},
+		},
+	)
+}
+
+func newBridgeTestStore(names []string, headRows, tailRows []map[string]any) *generationStore {
 	handle := &fakeGraphHandle{
 		query: func(_ context.Context, query string, _ map[string]any) ([]map[string]any, error) {
 			switch {
+			case isBridgeHeadQuery(query):
+				return append([]map[string]any{}, headRows...), nil
+			case isBridgeTailQuery(query):
+				return append([]map[string]any{}, tailRows...), nil
+			case isOutgoingHubQuery(query), isIncomingHubQuery(query):
+				return topicNameRows(names), nil
 			case strings.Contains(query, "AS predicate"):
 				// One-hop edge for the seed: a real graph predicate (upper-case,
 				// as stored) and a directly-connected neighbor.
@@ -505,11 +656,7 @@ func newTopicTestStore(names []string) *generationStore {
 				// missing link.
 				return []map[string]any{{"twohop": "two-hop-candidate"}}, nil
 			default:
-				rows := make([]map[string]any, 0, len(names))
-				for _, name := range names {
-					rows = append(rows, map[string]any{"name": name})
-				}
-				return rows, nil
+				return topicNameRows(names), nil
 			}
 		},
 	}
@@ -519,4 +666,32 @@ func newTopicTestStore(names []string) *generationStore {
 		reasoner: testReasoner{name: "topic-test"},
 		path:     "topic-test",
 	})
+}
+
+func topicNameRows(names []string) []map[string]any {
+	rows := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		rows = append(rows, map[string]any{"name": name})
+	}
+	return rows
+}
+
+func isBridgeHeadQuery(query string) bool {
+	return strings.Contains(query, "(a:Entity)-[:RELATES_TO]->(ra:RelatesToNode_)") &&
+		strings.Contains(query, "RETURN ra.name AS predicate")
+}
+
+func isBridgeTailQuery(query string) bool {
+	return strings.Contains(query, "(a:Entity)<-[:RELATES_TO]-(ra:RelatesToNode_)") &&
+		strings.Contains(query, "RETURN ra.name AS predicate")
+}
+
+func isOutgoingHubQuery(query string) bool {
+	return strings.Contains(query, "count(r) AS deg") &&
+		strings.Contains(query, "(a:Entity)-[:RELATES_TO]->(r:RelatesToNode_)")
+}
+
+func isIncomingHubQuery(query string) bool {
+	return strings.Contains(query, "count(r) AS deg") &&
+		strings.Contains(query, "(a:Entity)<-[:RELATES_TO]-(r:RelatesToNode_)")
 }
