@@ -304,7 +304,16 @@ func (r *ConditionalReasoner) FireRules(ctx context.Context, maxRules int) ([]Fi
 	}
 	out := make([]FiredRule, 0)
 	seen := map[string]bool{}
-	for _, idx := range r.forwardCandidates(ctx) {
+	candidates := r.forwardCandidates(ctx)
+	if fireRulesDebug {
+		facts := AssumedFactsFromContext(ctx)
+		var fs []string
+		for _, f := range facts {
+			fs = append(fs, f.Subject)
+		}
+		fireLog("[fire-rules] assumed=%d candidates=%d rules=%d facts=%v", len(facts), len(candidates), r.rules.Len(), fs)
+	}
+	for _, idx := range candidates {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
@@ -340,6 +349,9 @@ func (r *ConditionalReasoner) FireRules(ctx context.Context, maxRules int) ([]Fi
 		if len(out) >= maxRules {
 			break
 		}
+	}
+	if fireRulesDebug {
+		fireLog("[fire-rules] fired=%d", len(out))
 	}
 	return out, nil
 }
