@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -92,7 +93,16 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 		return nil, fmt.Errorf("grpc listen %s: %w", opts.GRPCAddr, err)
 	}
 
-	server := grpc.NewServer()
+	apiKey := os.Getenv("PENSIERO_API_KEY")
+	if apiKey != "" {
+		logger.Printf("grpc: api-key auth ON (x-api-key required; Health exempt)")
+	} else {
+		logger.Printf("grpc: api-key auth OFF (PENSIERO_API_KEY unset; fail-open)")
+	}
+	server := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcsvc.APIKeyUnaryInterceptor(apiKey)),
+		grpc.ChainStreamInterceptor(grpcsvc.APIKeyStreamInterceptor(apiKey)),
+	)
 	cfg := serveReasoningConfig()
 	cache := newProofCache(provider, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
 	reasoner := newTelemetryReasonerWithLoad(cache, telemetry, load)
