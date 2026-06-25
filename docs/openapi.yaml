@@ -1,0 +1,82 @@
+openapi: 3.0.3
+info:
+  title: pensiero — Reasoner HTTP Introspection API
+  version: "1.0"
+  description: >
+    pensiero's **primary API is gRPC** — `pensiero.v1.ReasonerService` (Entails,
+    Contradicts, Derive, FireRules, Health); see
+    `proto/pensiero/v1/reasoning.proto`, which is the canonical spec for the
+    reasoning calls. That is what production deploys and what humn calls.
+
+    This OpenAPI document covers only the **HTTP introspection server** (started with
+    `pensiero serve --health-addr`, deployment port `:8093`): read-only endpoints for
+    liveness, metrics, and the live reasoning trace (used by the test gateway's
+    "Thinking" tab). These endpoints are unauthenticated and serve no graph contents
+    beyond the reasoner's own thinking/questions (entity labels are hashed unless
+    `--cognition-show-labels`). The gRPC API is auth-gated separately via `x-api-key`.
+servers:
+  - url: http://127.0.0.1:8093
+    description: pensiero introspection server (--health-addr)
+tags:
+  - name: health
+  - name: introspection
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      responses:
+        "200": { description: OK, content: { text/plain: { schema: { type: string, example: ok } } } }
+  /metrics:
+    get:
+      tags: [introspection]
+      summary: Reasoner metrics (counts, cache, timings)
+      responses:
+        "200": { description: Metrics, content: { application/json: { schema: { type: object } } } }
+  /inventory:
+    get:
+      tags: [introspection]
+      summary: Inventory of loaded topic graphs / rules
+      responses:
+        "200": { description: Inventory, content: { application/json: { schema: { type: object } } } }
+  /questions:
+    get:
+      tags: [introspection]
+      summary: Open questions the reasoner is currently pursuing
+      responses:
+        "200":
+          description: List of open questions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  questions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        claim: { type: string }
+                        subject: { type: string }
+                        predicate: { type: string }
+                        object: { type: string }
+  /unconfirmed:
+    get:
+      tags: [introspection]
+      summary: Facts the reasoner could not confirm
+      responses:
+        "200": { description: Unconfirmed facts, content: { application/json: { schema: { type: object } } } }
+  /thinking:
+    get:
+      tags: [introspection]
+      summary: Live reasoning trace (entity labels hashed unless --cognition-show-labels)
+      responses:
+        "200":
+          description: Reasoning trace / thought graph
+          content:
+            application/json:
+              schema:
+                type: object
+                description: >
+                  The current reasoning trace — derivations being explored, proofs,
+                  and questions. Shape is free-form and evolves; consume defensively.
