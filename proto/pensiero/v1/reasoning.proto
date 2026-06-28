@@ -15,6 +15,11 @@ service ReasonerService {
   rpc Contradicts(ContradictsRequest) returns (ContradictsResponse);
   // Derive returns ranked proof paths from Source toward Target (or any target).
   rpc Derive(DeriveRequest) returns (DeriveResponse);
+  // FireRules forward-chains over the conditional rules using per-request assumed
+  // facts (e.g. a patient's findings) and returns the consequents of every rule
+  // whose conditions hold and whose exceptions do not (e.g. recommendations,
+  // contraindications). Empty when no rules fire.
+  rpc FireRules(FireRulesRequest) returns (FireRulesResponse);
   // Health is a liveness probe.
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -44,7 +49,13 @@ message Proof {
   double confidence = 7;
 }
 
-message EntailsRequest { Claim claim = 1; }
+message EntailsRequest {
+  Claim claim = 1;
+  // assumed_facts are per-request ground facts (e.g. a patient's findings as
+  // (finding, present, patient)) the conditional reasoner may use to satisfy rule
+  // conditions for THIS request only — they are not written to the graph.
+  repeated Claim assumed_facts = 2;
+}
 
 message EntailResult {
   Proof best = 1;        // nil when no proof
@@ -52,6 +63,20 @@ message EntailResult {
   repeated Proof all = 3;
   double confidence = 4;
 }
+
+message FiredRule {
+  string rule_id = 1;
+  Claim consequent = 2;    // the derived conclusion (e.g. patient -recommended-> X)
+  double confidence = 3;
+  Proof proof = 4;
+}
+
+message FireRulesRequest {
+  repeated Claim assumed_facts = 1;  // per-request ground facts (patient findings)
+  int32 max_rules = 2;               // cap on returned firings (0 = default)
+}
+
+message FireRulesResponse { repeated FiredRule fired = 1; }
 
 message ContradictsRequest { Claim claim = 1; }
 message ContradictsResponse {

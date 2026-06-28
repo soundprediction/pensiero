@@ -13,6 +13,7 @@ import (
 
 	"github.com/soundprediction/pensiero/pkg/grpcsvc"
 	"github.com/soundprediction/pensiero/pkg/reasoning"
+	"github.com/soundprediction/predicato/pkg/ruleschema"
 	"google.golang.org/grpc"
 )
 
@@ -95,7 +96,11 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 	cfg := serveReasoningConfig()
 	cache := newProofCache(provider, reg, cfg, defaultProofCacheMaxEntries, defaultProofCacheMaxBytes)
 	reasoner := newTelemetryReasonerWithLoad(cache, telemetry, load)
-	grpcsvc.NewServer(reasoner).Register(server)
+	gsrv := grpcsvc.NewServer(reasoner)
+	if mr := buildManagementReasoner(opts, reg, cfg, logger); mr != nil {
+		gsrv.SetRuleFirer(mr)
+	}
+	gsrv.Register(server)
 	runtime := &grpcReasoningRuntime{
 		server:          server,
 		store:           store,
@@ -128,12 +133,62 @@ func startGRPCReasoningServer(ctx context.Context, opts serveOptions, reg *reaso
 	return runtime, nil
 }
 
+// buildManagementReasoner builds the forward-chaining reasoner over the shared
+// rules graph, used by the FireRules RPC to surface management rules (treatment
+// recommendations / contraindications) from a request's assumed facts. Conditions
+// are patient findings satisfied by the assumed facts, so no base reasoner / graph
+// oracle is needed. Returns nil when conditional rules or a rules graph are off.
+func buildManagementReasoner(opts serveOptions, reg *reasoning.PredicateRegistry, cfg reasoning.Config, logger *log.Logger) *reasoning.ConditionalReasoner {
+	if !opts.ConditionalRules || strings.TrimSpace(opts.RulesGraph) == "" {
+		return nil
+	}
+	pool, err := newPooledGraphQuerier(opts.RulesGraph, 1, nil)
+	if err != nil {
+		logger.Printf("management reasoner: open rules-graph %q: %v", opts.RulesGraph, err)
+		return nil
+	}
+	rules, stats, err := reasoning.LoadRulesFromGraph(context.Background(), pool)
+	_ = pool.Close()
+	if err != nil {
+		logger.Printf("management reasoner: load shared rules: %v", err)
+		return nil
+	}
+	ruleSet, err := reasoning.CompileRules(rules, reg)
+	if err != nil || ruleSet.Len() == 0 {
+		return nil
+	}
+	logger.Printf("management reasoner: forward-chaining over %d shared rules", ruleSet.Len())
+	_ = stats
+	oracle := reasoning.NewAssumedFactsOracle(nil, reg)
+	return reasoning.NewConditionalReasoner(nil, oracle, ruleSet, reg, reasoning.ConditionalConfig{Decay: cfg.Decay})
+}
+
 func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegistry) (generationBuilder, error) {
 	initHandle, err := graphHandleInitializerForBackend(opts.Backend, opts.ReasoningExt)
 	if err != nil {
 		return nil, err
 	}
 	cfg := serveReasoningConfig()
+
+	// Shared conditional rules are applied to EVERY served topic (route-independent),
+	// loaded once from --rules-graph. This decouples rule availability from the
+	// per-claim topic routing: a rule fires wherever its claim lands. Per-topic Rule
+	// nodes (if any) still apply on top of these.
+	var sharedRules []ruleschema.Rule
+	if opts.ConditionalRules && strings.TrimSpace(opts.RulesGraph) != "" {
+		rulesPool, err := newPooledGraphQuerier(opts.RulesGraph, 1, nil)
+		if err != nil {
+			return nil, fmt.Errorf("open rules-graph %q: %w", opts.RulesGraph, err)
+		}
+		loaded, stats, err := reasoning.LoadRulesFromGraph(context.Background(), rulesPool)
+		_ = rulesPool.Close()
+		if err != nil {
+			return nil, fmt.Errorf("load shared rules from %q: %w", opts.RulesGraph, err)
+		}
+		sharedRules = loaded
+		log.Printf("shared conditional rules loaded=%d from %s", stats.Loaded, opts.RulesGraph)
+	}
+
 	return func(ctx context.Context, path string) (*generation, error) {
 		pool, err := newPooledGraphQuerier(path, opts.GRPCPoolSize, initHandle)
 		if err != nil {
@@ -153,13 +208,22 @@ func generationBuilderForServe(opts serveOptions, reg *reasoning.PredicateRegist
 				_ = pool.Close()
 				return nil, err
 			}
-			ruleSet, err := reasoning.CompileRules(loadedRules, reg)
+			// Per-topic Rule nodes plus the shared rules applied to every topic.
+			allRules := loadedRules
+			if len(sharedRules) > 0 {
+				allRules = append(append(make([]ruleschema.Rule, 0, len(loadedRules)+len(sharedRules)), loadedRules...), sharedRules...)
+			}
+			ruleSet, err := reasoning.CompileRules(allRules, reg)
 			if err != nil {
 				_ = pool.Close()
 				return nil, err
 			}
 			if ruleSet.Len() > 0 {
-				oracle := reasoning.NewGraphConditionOracle(pool, reasoner, reg, cfg)
+				// Per-request assumed facts (e.g. a patient's findings, sent over the
+				// gRPC seam) ground rule conditions for one request without any graph
+				// write; the graph oracle handles the rest.
+				oracle := reasoning.NewAssumedFactsOracle(
+					reasoning.NewGraphConditionOracle(pool, reasoner, reg, cfg), reg)
 				reasoner = reasoning.NewConditionalReasoner(reasoner, oracle, ruleSet, reg, reasoning.ConditionalConfig{
 					Decay: cfg.Decay,
 				})

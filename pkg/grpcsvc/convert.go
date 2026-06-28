@@ -16,6 +16,67 @@ func claimFromProto(p *pb.Claim) reasoning.Claim {
 	return reasoning.Claim{Subject: p.Subject, Predicate: p.Predicate, Object: p.Object}
 }
 
+func claimsToProto(cs []reasoning.Claim) []*pb.Claim {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]*pb.Claim, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, claimToProto(c))
+	}
+	return out
+}
+
+func firedRuleToProto(f reasoning.FiredRule) *pb.FiredRule {
+	return &pb.FiredRule{
+		RuleId:     f.RuleID,
+		Consequent: claimToProto(f.Consequent),
+		Confidence: f.Confidence,
+		Proof:      proofPtrToProto(f.Proof),
+	}
+}
+
+func firedRulesToProto(fs []reasoning.FiredRule) []*pb.FiredRule {
+	if len(fs) == 0 {
+		return nil
+	}
+	out := make([]*pb.FiredRule, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, firedRuleToProto(f))
+	}
+	return out
+}
+
+func firedRulesFromProto(ps []*pb.FiredRule) []reasoning.FiredRule {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]reasoning.FiredRule, 0, len(ps))
+	for _, p := range ps {
+		if p == nil {
+			continue
+		}
+		out = append(out, reasoning.FiredRule{
+			RuleID:     p.GetRuleId(),
+			Consequent: claimFromProto(p.GetConsequent()),
+			Confidence: p.GetConfidence(),
+			Proof:      proofPtrFromProto(p.GetProof()),
+		})
+	}
+	return out
+}
+
+func claimsFromProto(ps []*pb.Claim) []reasoning.Claim {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]reasoning.Claim, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, claimFromProto(p))
+	}
+	return out
+}
+
 func proofStepToProto(s reasoning.ProofStep) *pb.ProofStep {
 	return &pb.ProofStep{EdgeId: s.EdgeID, Rule: s.Rule, Predicate: s.Predicate, Source: s.Source, Target: s.Target, Confidence: s.Confidence}
 }

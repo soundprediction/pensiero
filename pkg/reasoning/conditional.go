@@ -75,6 +75,10 @@ type RuleSet struct {
 	SkippedInvalid int
 
 	byConsequent map[string][]int
+	// byConditionEntity maps a normalized condition entity to the rules that
+	// reference it, so forward chaining only considers rules touching the
+	// request's assumed facts instead of scanning every rule.
+	byConditionEntity map[string][]int
 }
 
 // Len returns the number of valid compiled rules.
@@ -103,7 +107,7 @@ func (rs *RuleSet) rulesFor(predicate string) []CompiledRule {
 // rules. Invalid rules are skipped and counted rather than making the whole rule
 // layer unusable.
 func CompileRules(rules []ruleschema.Rule, reg *PredicateRegistry) (*RuleSet, error) {
-	rs := &RuleSet{byConsequent: map[string][]int{}}
+	rs := &RuleSet{byConsequent: map[string][]int{}, byConditionEntity: map[string][]int{}}
 	for i, rule := range rules {
 		ruleschema.Normalize(&rule)
 		if strings.TrimSpace(rule.ID) == "" {
@@ -126,6 +130,13 @@ func CompileRules(rules []ruleschema.Rule, reg *PredicateRegistry) (*RuleSet, er
 		idx := len(rs.Rules)
 		rs.Rules = append(rs.Rules, compiled)
 		rs.byConsequent[normKey(consequentPredicate)] = append(rs.byConsequent[normKey(consequentPredicate)], idx)
+		for _, cond := range rule.Conditions {
+			for _, term := range []ruleschema.Term{cond.Subject, cond.Object} {
+				if ent := normalizeEntityForMatch(term.Entity); ent != "" {
+					rs.byConditionEntity[ent] = append(rs.byConditionEntity[ent], idx)
+				}
+			}
+		}
 	}
 	return rs, nil
 }
@@ -265,6 +276,120 @@ func (r *ConditionalReasoner) entailsByRules(ctx context.Context, claim Claim, s
 		Best:       &best,
 		All:        proofs,
 	}, nil
+}
+
+// FiredRule is a forward-chained conclusion: a rule whose conditions all hold
+// (and whose exceptions do not), with its instantiated ground consequent and the
+// supporting proof. This is how management rules — "IF <findings> THEN patient
+// -recommended-> X UNLESS <exception>" — surface as reasoned guidance.
+type FiredRule struct {
+	RuleID     string
+	Consequent Claim
+	Confidence float64
+	Proof      *Proof
+}
+
+// FireRules forward-chains over the compiled rules using the request's assumed
+// facts (e.g. the patient's findings): it returns every rule whose conditions all
+// hold and whose exceptions do not, with its consequent instantiated to a ground
+// claim. Only rules referencing an assumed fact are considered, so it does not
+// scan every rule. Rules with unbound consequent variables after solving are
+// skipped. Bounded by maxRules.
+func (r *ConditionalReasoner) FireRules(ctx context.Context, maxRules int) ([]FiredRule, error) {
+	if r == nil || r.rules == nil || r.rules.Len() == 0 {
+		return nil, nil
+	}
+	if maxRules <= 0 {
+		maxRules = 500
+	}
+	out := make([]FiredRule, 0)
+	seen := map[string]bool{}
+	candidates := r.forwardCandidates(ctx)
+	if fireRulesDebug {
+		facts := AssumedFactsFromContext(ctx)
+		var fs []string
+		for _, f := range facts {
+			fs = append(fs, f.Subject)
+		}
+		fireLog("[fire-rules] assumed=%d candidates=%d rules=%d facts=%v", len(facts), len(candidates), r.rules.Len(), fs)
+	}
+	for _, idx := range candidates {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		if idx < 0 || idx >= len(r.rules.Rules) {
+			continue
+		}
+		rule := r.rules.Rules[idx].Rule
+		if rule.Consequent.Negated || seen[rule.ID] {
+			continue
+		}
+		state := &conditionalState{active: map[string]bool{}}
+		branches, err := r.evalConditions(ctx, rule.Conditions, map[string]string{}, nil, state)
+		if err != nil {
+			return out, err
+		}
+		for _, branch := range branches {
+			veto, err := r.exceptionVeto(ctx, rule.Exceptions, branch.bindings, state)
+			if err != nil {
+				return out, err
+			}
+			if veto {
+				continue
+			}
+			cons, ok := instantiateConsequent(rule.Consequent, branch.bindings, r.reg)
+			if !ok {
+				continue
+			}
+			proof := r.composeProof(rule, cons, branch)
+			out = append(out, FiredRule{RuleID: rule.ID, Consequent: cons, Confidence: proof.Confidence, Proof: &proof})
+			seen[rule.ID] = true
+			break
+		}
+		if len(out) >= maxRules {
+			break
+		}
+	}
+	if fireRulesDebug {
+		fireLog("[fire-rules] fired=%d", len(out))
+	}
+	return out, nil
+}
+
+// forwardCandidates returns the indices of rules whose conditions reference one of
+// the request's assumed facts. With no assumed facts it returns all rules.
+func (r *ConditionalReasoner) forwardCandidates(ctx context.Context) []int {
+	facts := AssumedFactsFromContext(ctx)
+	if len(facts) == 0 || r.rules.byConditionEntity == nil {
+		all := make([]int, len(r.rules.Rules))
+		for i := range r.rules.Rules {
+			all[i] = i
+		}
+		return all
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, f := range facts {
+		for _, term := range []string{f.Subject, f.Object} {
+			for _, idx := range r.rules.byConditionEntity[normalizeEntityForMatch(term)] {
+				if !seen[idx] {
+					seen[idx] = true
+					out = append(out, idx)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func instantiateConsequent(pattern ruleschema.Pattern, bindings map[string]string, reg *PredicateRegistry) (Claim, bool) {
+	subj, sBound, _ := resolveTerm(pattern.Subject, bindings)
+	obj, oBound, _ := resolveTerm(pattern.Object, bindings)
+	pred := canonicalPatternPredicate(pattern, reg)
+	if !sBound || !oBound || strings.TrimSpace(subj) == "" || strings.TrimSpace(obj) == "" || pred == "" {
+		return Claim{}, false
+	}
+	return Claim{Subject: subj, Predicate: pred, Object: obj}, true
 }
 
 func (r *ConditionalReasoner) tryRule(ctx context.Context, compiled CompiledRule, claim Claim, state *conditionalState) (Proof, bool, error) {
@@ -605,7 +730,7 @@ func unifyTerm(term ruleschema.Term, value string, bindings map[string]string) b
 		return bindVariable(bindings, name, value)
 	}
 	entity := strings.TrimSpace(term.Entity)
-	return entity != "" && sameEntity(entity, value)
+	return entity != "" && entityMatches(entity, value)
 }
 
 func bindVariable(bindings map[string]string, name string, value string) bool {
@@ -615,7 +740,7 @@ func bindVariable(bindings map[string]string, name string, value string) bool {
 		return false
 	}
 	if existing := strings.TrimSpace(bindings[name]); existing != "" {
-		return sameEntity(existing, value)
+		return entityMatches(existing, value)
 	}
 	bindings[name] = value
 	return true

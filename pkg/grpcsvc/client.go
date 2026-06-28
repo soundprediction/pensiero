@@ -41,7 +41,12 @@ func NewClientConn(cc *grpc.ClientConn) *Client {
 
 // Entails decides whether a claim is symbolically supported/contradicted.
 func (c *Client) Entails(ctx context.Context, claim reasoning.Claim) (reasoning.EntailResult, error) {
-	res, err := c.rc.Entails(ctx, &pb.EntailsRequest{Claim: claimToProto(claim)})
+	// Forward any per-request assumed facts (e.g. patient findings) the host set
+	// on the context so the daemon can ground rule conditions for this request.
+	res, err := c.rc.Entails(ctx, &pb.EntailsRequest{
+		Claim:        claimToProto(claim),
+		AssumedFacts: claimsToProto(reasoning.AssumedFactsFromContext(ctx)),
+	})
 	if err != nil {
 		return reasoning.EntailResult{}, err
 	}
@@ -55,6 +60,20 @@ func (c *Client) Contradicts(ctx context.Context, claim reasoning.Claim) (bool, 
 		return false, nil, err
 	}
 	return res.GetContradicts(), proofPtrFromProto(res.GetProof()), nil
+}
+
+// FireRules forward-chains the daemon's conditional rules over the given assumed
+// facts (e.g. a patient's findings) and returns the consequents of every rule
+// that fires (recommendations, contraindications, …).
+func (c *Client) FireRules(ctx context.Context, assumedFacts []reasoning.Claim, maxRules int) ([]reasoning.FiredRule, error) {
+	res, err := c.rc.FireRules(ctx, &pb.FireRulesRequest{
+		AssumedFacts: claimsToProto(assumedFacts),
+		MaxRules:     int32(maxRules),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return firedRulesFromProto(res.GetFired()), nil
 }
 
 // Derive returns ranked proof paths from Source toward Target.

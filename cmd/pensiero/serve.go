@@ -38,6 +38,7 @@ type serveOptions struct {
 	GRPCAddr            string
 	Backend             string
 	ReasoningExt        string
+	RulesGraph          string
 	EmbedderURL         string
 	EmbedderModel       string
 	GoldenFile          string
@@ -105,6 +106,7 @@ func runServe(args []string) error {
 	fs.IntVar(&opts.SemanticSample, "cognition-semantic-sample", opts.SemanticSample, "bounded entity sample size for semantic cognition topics")
 	fs.BoolVar(&opts.ShowCognitionLabels, "cognition-show-labels", opts.ShowCognitionLabels, "include raw entity labels (not just hashes) in /thinking and /questions; default hashes-only for privacy")
 	fs.BoolVar(&opts.ConditionalRules, "conditional-rules", opts.ConditionalRules, "enable bounded backward-chaining over structured Rule nodes")
+	fs.StringVar(&opts.RulesGraph, "rules-graph", opts.RulesGraph, "ladybug graph of shared conditional Rule nodes applied to EVERY served topic (route-independent), in addition to any per-topic Rule nodes")
 	fs.IntVar(&opts.MaxOpenTopics, "max-open-topics", opts.MaxOpenTopics, "maximum lazily-open topic graphs for gRPC serving")
 	fs.IntVar(&opts.MinSupport, "min-support", opts.MinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&opts.MinParentSupport, "min-parent-support", opts.MinParentSupport, "minimum child support for selected parent nodes")
@@ -310,6 +312,7 @@ func defaultServeOptions() serveOptions {
 		GRPCAddr:          os.Getenv("PENSIERO_GRPC_ADDR"),
 		Backend:           reasoning.NativeBackendName,
 		ReasoningExt:      os.Getenv("PENSIERO_REASONING_EXTENSION"),
+		RulesGraph:        os.Getenv("PENSIERO_RULES_GRAPH"),
 		EmbedderURL:       os.Getenv("PENSIERO_EMBEDDER_URL"),
 		EmbedderModel:     firstEnv("PENSIERO_EMBEDDER_MODEL", connector.DefaultEmbeddingModel),
 		GoldenFile:        os.Getenv("PENSIERO_GOLDEN_FILE"),
