@@ -1,0 +1,9 @@
+# Keep the Docker build context small. The image needs the Go source, lib/
+# (Cozo static lib), and vendor-libs/ (Ladybug + reasoning extension). Exclude
+# local cruft and docs the build never uses.
+.git
+docs/
+/pensiero
+**/*.test
+**/*.out
+lib/libcozo_c.a.gz
