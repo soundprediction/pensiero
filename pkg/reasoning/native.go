@@ -38,15 +38,25 @@ func NewNativeReasoner(g GraphQuerier, reg *PredicateRegistry, cfg Config) *Nati
 		reg:                 reg,
 		cfg:                 cfg.withDefaults(),
 		hasProvenanceStatus: probeProvenanceStatus(context.Background(), g),
+		EnforcePredicate:    true,
 	}
 }
 
 func (n *NativeReasoner) Name() string { return NativeBackendName }
 
-// SetEnforcePredicate opts the native backend into passing an accepted-predicate
-// set to REASON_ENTAILS. The zero value is false for legacy path-existence calls.
+// SetEnforcePredicate controls whether the native backend passes and verifies an
+// accepted-predicate set. NewNativeReasoner enables enforcement by default.
 func (n *NativeReasoner) SetEnforcePredicate(enforce bool) *NativeReasoner {
 	n.EnforcePredicate = enforce
+	return n
+}
+
+// SetLegacyPathExistence is the explicit compatibility opt-out for tests or
+// callers that still require the legacy subject-to-object path-existence verdict.
+// Legacy mode uses the 4-argument native arity, which cannot quarantine deduced
+// predicate nodes.
+func (n *NativeReasoner) SetLegacyPathExistence(enabled bool) *NativeReasoner {
+	n.EnforcePredicate = !enabled
 	return n
 }
 
@@ -64,13 +74,17 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 	if conflict, proof, err := n.Contradicts(ctx, c); err == nil && conflict {
 		return EntailResult{Verdict: VerdictContradicted, Confidence: 1.0, Best: proof}, nil
 	}
-	accepted := ""
+	var acceptedPredicates []string
 	if n.EnforcePredicate {
-		accepted = encodeAcceptedPredicates(nativeAcceptedPredicates(n.reg, c.Predicate))
+		acceptedPredicates = nativeAcceptedPredicates(n.reg, c.Predicate)
+		if len(acceptedPredicates) == 0 {
+			return EntailResult{Verdict: VerdictUnsupported}, nil
+		}
 	}
+	accepted := encodeAcceptedPredicates(acceptedPredicates)
 	var q string
 	switch {
-	case n.excludeDeduced():
+	case n.EnforcePredicate && n.excludeDeduced():
 		q = fmt.Sprintf(
 			"CALL REASON_ENTAILS(%s, %s, %s, %d, %s, true) YIELD verdict, confidence, proof RETURN verdict, confidence, proof",
 			cyStr(c.Subject), cyStr(c.Predicate), cyStr(c.Object), n.cfg.MaxHops, cyStr(accepted))
@@ -101,11 +115,30 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 	if res.Verdict == "" {
 		res.Verdict = VerdictUnsupported
 	}
+	if n.EnforcePredicate && res.Verdict == VerdictEntailed {
+		if res.Best == nil {
+			return EntailResult{Verdict: VerdictUnsupported}, nil
+		}
+		effective, ok := effectivePredicate(n.reg, res.Best.Steps)
+		if !ok || !acceptedPredicate(effective, acceptedPredicates) {
+			return EntailResult{Verdict: VerdictUnsupported}, nil
+		}
+		best := *res.Best
+		best.Predicate = effective
+		res.Best = &best
+	}
 	return res, nil
 }
 
 func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string {
-	target := canonicalPredicate(reg, predicate)
+	if reg == nil {
+		return nil
+	}
+	meta, known := reg.Canonical(predicate)
+	if !known || strings.TrimSpace(meta.Canonical) == "" {
+		return nil
+	}
+	target := meta.Canonical
 	seen := map[string]bool{}
 	var out []string
 	add := func(pred string) {
@@ -129,6 +162,19 @@ func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string
 		return normKey(out[i]) < normKey(out[j])
 	})
 	return out
+}
+
+func acceptedPredicate(predicate string, accepted []string) bool {
+	key := normKey(predicate)
+	if key == "" {
+		return false
+	}
+	for _, candidate := range accepted {
+		if normKey(candidate) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeAcceptedPredicates(preds []string) string {
