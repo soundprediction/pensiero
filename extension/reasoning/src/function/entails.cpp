@@ -76,7 +76,7 @@ static offset_t entailsTableFunc(const TableFuncMorsel& morsel, const TableFuncI
 // Forward declaration of the real reasoning core (implemented further below).
 std::vector<ReasonRow> runEntails(ClientContext* context, const std::string& subject,
     const std::string& predicate, const std::string& object, int64_t maxHops,
-    const std::string& accepted, bool excludeDeduced);
+    const std::string& accepted, bool enforcePredicate, bool excludeDeduced);
 
 static std::unique_ptr<TableFuncBindData> entailsBindFunc(ClientContext* context,
     const TableFuncBindInput* input) {
@@ -88,8 +88,10 @@ static std::unique_ptr<TableFuncBindData> entailsBindFunc(ClientContext* context
         maxHops = input->getLiteralVal<int64_t>(3);
     }
     std::string accepted;
+    bool enforcePredicate = false;
     if (input->params.size() > 4) {
         accepted = input->getLiteralVal<std::string>(4);
+        enforcePredicate = true;
     }
     bool excludeDeduced = false;
     if (input->params.size() > 5) {
@@ -108,15 +110,16 @@ static std::unique_ptr<TableFuncBindData> entailsBindFunc(ClientContext* context
     auto columns = input->binder->createVariables(columnNames, columnTypes);
 
     auto rows = runEntails(context, subject, predicate, object, maxHops, accepted,
-        excludeDeduced);
+        enforcePredicate, excludeDeduced);
     auto numRows = rows.size();
     return std::make_unique<EntailsBindData>(std::move(rows), std::move(columns), numRows);
 }
 
 function_set EntailsFunction::getFunctionSet() {
     function_set result;
-    // Legacy arities keep v1 path-existence semantics. The 5-arg arity is opt-in
-    // predicate enforcement: accepted is a comma-separated canonical predicate set.
+    // Legacy arities keep v1 path-existence semantics. The 5-arg arity opts into
+    // predicate enforcement: accepted is a comma-separated canonical predicate set,
+    // and an empty set fails closed.
     // The 6-arg arity additionally opts into deduced/speculative path quarantine.
     std::vector<std::vector<LogicalTypeID>> sigs = {
         {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING},
@@ -575,26 +578,29 @@ std::string buildProof(const LogicalPath& p) {
 
 std::vector<ReasonRow> runEntails(ClientContext* context, const std::string& subject,
     const std::string& /*predicate*/, const std::string& object, int64_t maxHops,
-    const std::string& accepted, bool excludeDeduced) {
-    // v1 compatibility: with no accepted predicate set, presence of an anchored,
-    // bounded reified path subject ⇝ object entails the claim (§2.1/§2.4
-    // composition; the predicate is recorded in the proof). Passing accepted opts
-    // into native predicate filtering without changing legacy arities.
-    auto paths = findPaths(context, subject, object, maxHops, 8, excludeDeduced);
+    const std::string& accepted, bool enforcePredicate, bool excludeDeduced) {
     ReasonRow r;
+    std::unordered_set<std::string> acceptedPredicates;
+    if (enforcePredicate) {
+        acceptedPredicates = parseAcceptedPredicates(accepted);
+        if (acceptedPredicates.empty()) {
+            r.verdict = "unsupported";
+            r.confidence = 0.0;
+            r.proof = "[]";
+            return {r};
+        }
+    }
+
+    // v1 compatibility is limited to the 3- and 4-argument arities. Once the
+    // accepted-predicate argument is supplied, only a path establishing one of
+    // those predicates may entail the claim.
+    auto paths = findPaths(context, subject, object, maxHops, 8, excludeDeduced);
     if (paths.empty()) {
         r.verdict = "unsupported";
         r.confidence = 0.0;
         r.proof = "[]";
         return {r};
     }
-    std::unordered_set<std::string> acceptedPredicates;
-    bool enforcePredicate = false;
-    if (!trimASCII(accepted).empty()) {
-        acceptedPredicates = parseAcceptedPredicates(accepted);
-        enforcePredicate = !acceptedPredicates.empty();
-    }
-
     // Pick the highest-confidence accepted proof (shortest paths rank first, but
     // compose to be sure since decay is monotone in hops).
     const LogicalPath* best = nullptr;

@@ -37,26 +37,63 @@ func (r *predicateConstrainedReasoner) Entails(ctx context.Context, c Claim) (En
 	if err != nil || res.Verdict != VerdictEntailed {
 		return res, err
 	}
-	if res.Best == nil {
-		return EntailResult{Verdict: VerdictUnsupported}, nil
-	}
-	// A conditional-rule proof already matches the claim's predicate by
-	// construction (the rule consequent IS the claim). Its step chain mixes the
-	// condition predicate(s) with the consequent predicate, so it is not a single
-	// coherent predicate path and must not be subjected to the path-predicate
-	// entailment check (which would reject the valid conclusion).
-	if res.Best.RuleClass == "conditional" {
-		return res, nil
-	}
-	effective, ok := effectivePredicate(r.reg, res.Best.Steps)
 	target := canonicalPredicate(r.reg, c.Predicate)
-	if !ok || !proofEntailsPredicate(r.reg, effective, target, true) {
+	validAll := make([]Proof, 0, len(res.All))
+	for _, proof := range res.All {
+		if valid, ok := r.proofEntailing(proof, target); ok {
+			validAll = append(validAll, valid)
+		}
+	}
+	if len(res.All) > 0 {
+		res.All = validAll
+	}
+	if res.Best != nil {
+		if best, ok := r.proofEntailing(*res.Best, target); ok {
+			res.Best = &best
+			return res, nil
+		}
+	}
+	if len(validAll) == 0 {
 		return EntailResult{Verdict: VerdictUnsupported}, nil
 	}
-	best := *res.Best
-	best.Predicate = effective
+	best := validAll[0]
+	for _, proof := range validAll[1:] {
+		if proof.Confidence > best.Confidence {
+			best = proof
+		}
+	}
 	res.Best = &best
+	res.Confidence = best.Confidence
 	return res, nil
+}
+
+func (r *predicateConstrainedReasoner) proofEntailing(proof Proof, target string) (Proof, bool) {
+	var predicate string
+	var ok bool
+	if normKey(proof.RuleClass) == "conditional" {
+		predicate, ok = conditionalConsequentPredicate(r.reg, proof.Steps)
+		if !ok || !predicateEntails(r.reg, predicate, target) {
+			return Proof{}, false
+		}
+	} else {
+		predicate, ok = effectivePredicate(r.reg, proof.Steps)
+		if !ok || !proofEntailsPredicate(r.reg, predicate, target, true) {
+			return Proof{}, false
+		}
+	}
+	proof.Predicate = predicate
+	return proof, true
+}
+
+func conditionalConsequentPredicate(reg *PredicateRegistry, steps []ProofStep) (string, bool) {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if normKey(steps[i].Rule) != "conditional" {
+			continue
+		}
+		predicate := canonicalPredicate(reg, steps[i].Predicate)
+		return predicate, predicate != ""
+	}
+	return "", false
 }
 
 func (r *predicateConstrainedReasoner) Contradicts(ctx context.Context, c Claim) (bool, *Proof, error) {

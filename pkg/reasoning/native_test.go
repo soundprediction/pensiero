@@ -73,6 +73,99 @@ func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
 	}
 }
 
+func TestNativeReasonerEntailsEmptyAcceptedPredicateSetFailsClosed(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "known"}}, nil, nil)
+	entailsCalls := 0
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+			return rows, nil
+		}
+		if strings.Contains(q, "REASON_ENTAILS") {
+			entailsCalls++
+			return []map[string]any{{
+				"verdict":    string(VerdictEntailed),
+				"confidence": 0.9,
+				"proof":      `[{"rule":"composition","predicate":"known","source":"s","target":"o"}]`,
+			}}, nil
+		}
+		return nil, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+
+	res, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "unknown", Object: "o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict != VerdictUnsupported {
+		t.Fatalf("verdict=%s, want %s", res.Verdict, VerdictUnsupported)
+	}
+	if entailsCalls != 0 {
+		t.Fatalf("REASON_ENTAILS calls=%d, want 0 for empty accepted-predicate set", entailsCalls)
+	}
+}
+
+func TestNativeReasonerEntailsRejectsMismatchedPathPredicate(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{
+		{Canonical: "treats"},
+		{Canonical: "causes"},
+	}, nil, nil)
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+			return rows, nil
+		}
+		if strings.Contains(q, "REASON_ENTAILS") {
+			return []map[string]any{{
+				"verdict":    string(VerdictEntailed),
+				"confidence": 0.9,
+				"proof":      `[{"rule":"composition","predicate":"causes","source":"aspirin","target":"headache"}]`,
+			}}, nil
+		}
+		return nil, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+
+	res, err := n.Entails(context.Background(), Claim{
+		Subject: "aspirin", Predicate: "treats", Object: "headache",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict != VerdictUnsupported {
+		t.Fatalf("verdict=%s, want %s", res.Verdict, VerdictUnsupported)
+	}
+}
+
+func TestNativeReasonerEntailsKeepsGenuinePredicateMatch(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "treats"}}, nil, nil)
+	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
+		if rows, ok := answerProvenanceStatusProbe(q, false); ok {
+			return rows, nil
+		}
+		if strings.Contains(q, "REASON_ENTAILS") {
+			return []map[string]any{{
+				"verdict":    string(VerdictEntailed),
+				"confidence": 0.9,
+				"proof":      `[{"rule":"composition","predicate":"treats","source":"aspirin","target":"headache"}]`,
+			}}, nil
+		}
+		return nil, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+
+	res, err := n.Entails(context.Background(), Claim{
+		Subject: "aspirin", Predicate: "treats", Object: "headache",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict != VerdictEntailed {
+		t.Fatalf("verdict=%s, want %s", res.Verdict, VerdictEntailed)
+	}
+	if res.Best == nil || res.Best.Predicate != "treats" {
+		t.Fatalf("best=%+v, want verified treats proof", res.Best)
+	}
+}
+
 func TestNativeReasonerEntailsEscapesAcceptedPredicateList(t *testing.T) {
 	reg := NewPredicateRegistry([]PredicateMeta{
 		{Canonical: "target"},
@@ -117,6 +210,7 @@ func TestNativeReasonerEntailsKeepsLegacyArityWhenQuarantineDisabled(t *testing.
 		return nil, nil
 	}}
 	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+	n.SetLegacyPathExistence(true)
 
 	_, err := n.Entails(context.Background(), Claim{Subject: "s", Predicate: "p", Object: "o"})
 	if err != nil {
@@ -132,7 +226,7 @@ func TestNativeReasonerEntailsKeepsLegacyArityWhenQuarantineDisabled(t *testing.
 }
 
 func TestNativeReasonerEntailsSchemaGatesQuarantineFlag(t *testing.T) {
-	t.Run("without status keeps legacy arity", func(t *testing.T) {
+	t.Run("without status keeps accepted-predicate arity", func(t *testing.T) {
 		reg := NewPredicateRegistry([]PredicateMeta{{Canonical: "p"}}, nil, nil)
 		var gotQuery string
 		g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
@@ -148,9 +242,9 @@ func TestNativeReasonerEntailsSchemaGatesQuarantineFlag(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "CALL REASON_ENTAILS('s', 'p', 'o', 4) YIELD"
+		want := "CALL REASON_ENTAILS('s', 'p', 'o', 4, 'p') YIELD"
 		if !strings.Contains(gotQuery, want) {
-			t.Fatalf("query=%q, want legacy arity containing %q", gotQuery, want)
+			t.Fatalf("query=%q, want accepted-predicate arity containing %q", gotQuery, want)
 		}
 		if strings.Contains(gotQuery, ", true) YIELD") {
 			t.Fatalf("query=%q unexpectedly contained quarantine flag", gotQuery)
@@ -203,7 +297,7 @@ func TestNativeReasonerEntailsDefaultsToNativeQuarantineFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "CALL REASON_ENTAILS('s', 'p', 'o', 4, '', true) YIELD"
+	want := "CALL REASON_ENTAILS('s', 'p', 'o', 4, 'p', true) YIELD"
 	if !strings.Contains(gotQuery, want) {
 		t.Fatalf("query=%q, want native quarantine arity containing %q", gotQuery, want)
 	}
