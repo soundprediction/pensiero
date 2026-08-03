@@ -309,11 +309,32 @@ func (r *rotatingCognitionAcquirer) Acquire() (*generation, func()) {
 	if len(keys) == 0 {
 		return r.mgr.Acquire()
 	}
+	// Rotate only onto a topic we can open WITHOUT evicting one. Background
+	// thinking must never cost a query its warm graph: an open here takes seconds
+	// (GRPCPoolSize handles, LOAD EXTENSION each, rule load and compile, plus the
+	// validator's full Entity count) and runs under the manager mutex, so a
+	// rotation-driven open both evicts a query-warm topic and stalls every
+	// concurrent acquire while it runs. Observed in production as a cold open
+	// every ~2 minutes with the open set tracking rotation order rather than
+	// traffic. Scan forward for a free-slot candidate and give up this round if
+	// there is none — cognition sweeps a little slower, queries stop paying for it.
 	r.mu.Lock()
-	key := keys[r.idx%len(keys)]
-	r.idx++
-	r.lastRotate = r.now()
+	var key string
+	for i := 0; i < len(keys); i++ {
+		candidate := keys[(r.idx+i)%len(keys)]
+		if r.mgr.isOpen(candidate) || r.mgr.hasFreeSlot() {
+			key = candidate
+			r.idx += i + 1
+			break
+		}
+	}
+	if key != "" {
+		r.lastRotate = r.now()
+	}
 	r.mu.Unlock()
+	if key == "" {
+		return r.mgr.Acquire() // every slot busy — reuse a warm topic this round
+	}
 	gen, release, err := r.mgr.acquireTopic(context.Background(), key)
 	if err != nil || gen == nil || gen.reasoner == nil {
 		release()
@@ -396,6 +417,12 @@ func (m *topicGenerationManager) resolveTopic(ctx context.Context, route generat
 	if m == nil {
 		return "", errNoGeneration
 	}
+	// An explicit topic that does not name a graph we serve is a ROUTING BUG in
+	// the caller, not a hint to be quietly ignored. Falling through silently made
+	// every claim reason against m.topics[0] — the alphabetically first graph —
+	// which is how a deployment ended up answering 908 of 920 entailment queries
+	// "unsupported" from the wrong graph, with nothing in the logs to say so.
+	requested := ""
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		for _, raw := range md.Get(topicMetadataKey) {
 			topic := strings.TrimSpace(raw)
@@ -405,16 +432,34 @@ func (m *topicGenerationManager) resolveTopic(ctx context.Context, route generat
 			if key, ok := m.lookup[topicLookupKey(topic)]; ok {
 				return key, nil
 			}
+			if requested == "" {
+				requested = topic
+			}
 		}
 	}
 	if key := m.keywordTopic(route.Text); key != "" {
+		if requested != "" {
+			log.Printf("topic resolve: requested topic %q is not served; fell back to keyword match %q", requested, key)
+		}
 		return key, nil
 	}
 	if m.defaultKey != "" {
+		if requested != "" {
+			log.Printf("topic resolve: requested topic %q is not served; fell back to --default-topic %q", requested, m.defaultKey)
+		}
 		return m.defaultKey, nil
 	}
 	if len(m.topics) == 0 {
 		return "", errNoGeneration
+	}
+	// Last resort: the first graph, which is arbitrary (topics are sorted by
+	// name). Reasoning against an arbitrary graph produces confident-looking
+	// "unsupported" verdicts, so say so loudly rather than let it look like a
+	// considered answer. Configure --default-topic to make this deliberate.
+	if requested != "" {
+		log.Printf("topic resolve: requested topic %q is not served and no --default-topic is set; "+
+			"reasoning against %q, which is arbitrary — verdicts from this request are unreliable",
+			requested, m.topics[0].Key)
 	}
 	return m.topics[0].Key, nil
 }
@@ -554,6 +599,28 @@ func (m *topicGenerationManager) openCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.open)
+}
+
+// isOpen reports whether a topic is already open, so acquiring it evicts nothing.
+func (m *topicGenerationManager) isOpen(key string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.open[key] != nil
+}
+
+// hasFreeSlot reports whether a new topic can be opened without evicting one.
+// Used by background cognition, which must never take a warm topic away from
+// queries just to continue its sweep.
+func (m *topicGenerationManager) hasFreeSlot() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxOpen <= 0 || len(m.open) < m.maxOpen
 }
 
 func closeTopicEntry(entry *topicEntry) error {

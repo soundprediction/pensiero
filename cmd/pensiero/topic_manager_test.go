@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -494,4 +496,132 @@ func waitForCondition(t *testing.T, timeout time.Duration, ok func() bool, descr
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", description)
+}
+
+// Background cognition rotates onto a new topic periodically. Opening one costs
+// seconds (a pool of handles, LOAD EXTENSION each, rule load and compile, plus
+// the validator's Entity count) and runs under the manager mutex, so a rotation
+// that evicts must never take a query-warm topic away. Observed in production as
+// a cold open every ~2 minutes with the open set tracking rotation order rather
+// than traffic.
+func TestRotatingCognitionDoesNotEvictWarmTopics(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"alpha.ladybug", "beta.ladybug", "gamma.ladybug"} {
+		writeTopicGraph(t, dir, name)
+	}
+	stats := newTopicBackendStats()
+	// One slot: any rotation onto a different topic would have to evict.
+	manager := newTestTopicManager(t, dir, "", 1, stats)
+	defer manager.Close()
+
+	// A query warms one topic.
+	_, release := mustAcquireTopic(t, manager, "beta")
+	release()
+	warmBuilds := stats.buildCount("beta")
+
+	rot := newRotatingCognitionAcquirer(manager)
+	// Force a rotation attempt on every call.
+	rot.period = 0
+	for i := 0; i < 5; i++ {
+		gen, rel := rot.Acquire()
+		if gen == nil {
+			t.Fatalf("cognition acquire %d returned no generation", i)
+		}
+		rel()
+	}
+
+	if got := manager.openCount(); got != 1 {
+		t.Fatalf("open topics=%d, want 1", got)
+	}
+	// beta must still be the open one, never rebuilt.
+	if !manager.isOpen("beta") {
+		t.Fatal("cognition evicted the query-warm topic")
+	}
+	if got := stats.buildCount("beta"); got != warmBuilds {
+		t.Fatalf("beta rebuilt by cognition: builds=%d, want %d", got, warmBuilds)
+	}
+	for _, other := range []string{"alpha", "gamma"} {
+		if got := stats.buildCount(other); got != 0 {
+			t.Fatalf("cognition opened %s (%d builds) despite no free slot", other, got)
+		}
+	}
+}
+
+// With a free slot, cognition should still sweep — the guard must not disable
+// background thinking, only stop it stealing a slot.
+func TestRotatingCognitionStillRotatesWhenSlotsAreFree(t *testing.T) {
+	dir := t.TempDir()
+	writeTopicGraph(t, dir, "alpha.ladybug")
+	writeTopicGraph(t, dir, "beta.ladybug")
+	stats := newTopicBackendStats()
+	manager := newTestTopicManager(t, dir, "", 4, stats)
+	defer manager.Close()
+
+	rot := newRotatingCognitionAcquirer(manager)
+	rot.period = 0
+	for i := 0; i < 4; i++ {
+		gen, rel := rot.Acquire()
+		if gen == nil {
+			t.Fatalf("cognition acquire %d returned no generation", i)
+		}
+		rel()
+	}
+
+	if stats.buildCount("alpha") == 0 && stats.buildCount("beta") == 0 {
+		t.Fatal("cognition opened nothing despite free slots")
+	}
+}
+
+// An explicit pensiero-topic that names no served graph is a caller routing bug.
+// Resolving it silently to topics[0] — the alphabetically first graph — is how a
+// deployment came to answer 908 of 920 entailment queries from the wrong graph
+// with nothing in the logs. It must still resolve (fail-open), but say so.
+func TestResolveTopicFallsBackAudiblyForUnknownTopic(t *testing.T) {
+	dir := t.TempDir()
+	writeTopicGraph(t, dir, "alpha.ladybug")
+	writeTopicGraph(t, dir, "beta.ladybug")
+	manager := newTestTopicManager(t, dir, "", 2, newTopicBackendStats())
+	defer manager.Close()
+
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(prev)
+
+	key, err := manager.resolveTopic(incomingTopicContext("default"), generationRoute{})
+	if err != nil {
+		t.Fatalf("resolveTopic error: %v", err)
+	}
+	if key == "" {
+		t.Fatal("resolveTopic should still return a topic (fail-open)")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "default") {
+		t.Fatalf("unknown requested topic not named in the log: %q", out)
+	}
+	if !strings.Contains(out, "not served") {
+		t.Fatalf("fallback not reported as a routing problem: %q", out)
+	}
+}
+
+// A topic that IS served must resolve silently — the warning is for genuine
+// misrouting, not routine traffic.
+func TestResolveTopicIsSilentForKnownTopic(t *testing.T) {
+	dir := t.TempDir()
+	writeTopicGraph(t, dir, "alpha.ladybug")
+	manager := newTestTopicManager(t, dir, "", 2, newTopicBackendStats())
+	defer manager.Close()
+
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(prev)
+
+	key, err := manager.resolveTopic(incomingTopicContext("alpha"), generationRoute{})
+	if err != nil || key != "alpha" {
+		t.Fatalf("resolveTopic(alpha) = %q, %v; want alpha, nil", key, err)
+	}
+	if s := logs.String(); s != "" {
+		t.Fatalf("known topic should not log a fallback warning, got %q", s)
+	}
 }
