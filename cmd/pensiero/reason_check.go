@@ -19,26 +19,48 @@ func runReasonCheck(args []string) error {
 	fs := flag.NewFlagSet("reason-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var graphPath, claimSpec, backend, reasoningExt, assumeSpec, rulesGraph string
+	var predicatePacks, typePacks, registrySpec, samplePredicate string
+	var sampleN int
 	fs.StringVar(&graphPath, "graph", "", "ladybug graph path (read-only)")
 	fs.StringVar(&rulesGraph, "rules-graph", "", "optional shared rules graph applied on top of the topic graph (route-independent rules)")
 	fs.StringVar(&claimSpec, "claim", "", `claim to test as "subject|predicate|object"`)
 	fs.StringVar(&backend, "backend", reasoning.NativeBackendName, "ladybug-native or symbolic-graph")
 	fs.StringVar(&reasoningExt, "reasoning-extension", "reasoning", "reasoning extension path/name (ladybug-native only)")
 	fs.StringVar(&assumeSpec, "assume", "", `per-request assumed facts, comma-separated "s|p|o" (e.g. patient context)`)
+	// The registry MUST be configurable here. This tool hardcoded "general", while
+	// the serving daemon is normally run with --predicate-packs medical, so every
+	// clinical predicate resolved as undeclared and every claim came back
+	// "unsupported" — a diagnostic that could not reproduce production, and whose
+	// confident negatives were worse than no answer at all.
+	fs.StringVar(&registrySpec, "registry", "general", "general or path to a registry JSON file")
+	fs.StringVar(&predicatePacks, "predicate-packs", "", "comma-separated predicate packs to extend the general registry (e.g. medical)")
+	fs.StringVar(&typePacks, "type-packs", "", "comma-separated type packs")
+	// Sampling makes the graph's ACTUAL contents inspectable. Without it there is
+	// no way to know whether a claim failed because of naming, or because the graph
+	// simply has no such edge — and entity names in these graphs are specific and
+	// inconsistently cased ("Autoimmune hypothyroidism", lowercase "acromegaly").
+	fs.StringVar(&samplePredicate, "sample-predicate", "", "instead of testing a claim, print real (subject, predicate, object) triples for this predicate")
+	fs.IntVar(&sampleN, "sample-n", 10, "how many triples to print with --sample-predicate")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if graphPath == "" || claimSpec == "" {
-		return fmt.Errorf(`--graph and --claim ("subject|predicate|object") are required`)
+	if graphPath == "" {
+		return fmt.Errorf("--graph is required")
 	}
-	parts := strings.SplitN(claimSpec, "|", 3)
-	if len(parts) != 3 {
-		return fmt.Errorf("--claim must be subject|predicate|object")
+	if claimSpec == "" && samplePredicate == "" {
+		return fmt.Errorf(`--claim ("subject|predicate|object") or --sample-predicate is required`)
 	}
-	claim := reasoning.Claim{
-		Subject:   strings.TrimSpace(parts[0]),
-		Predicate: strings.TrimSpace(parts[1]),
-		Object:    strings.TrimSpace(parts[2]),
+	var claim reasoning.Claim
+	if claimSpec != "" {
+		parts := strings.SplitN(claimSpec, "|", 3)
+		if len(parts) != 3 {
+			return fmt.Errorf("--claim must be subject|predicate|object")
+		}
+		claim = reasoning.Claim{
+			Subject:   strings.TrimSpace(parts[0]),
+			Predicate: strings.TrimSpace(parts[1]),
+			Object:    strings.TrimSpace(parts[2]),
+		}
 	}
 
 	gh, err := openLadybugGraph(graphPath, true)
@@ -58,9 +80,26 @@ func runReasonCheck(args []string) error {
 		}
 	}
 
-	reg, _, err := loadRegistryWithTypePacks("general", nil, nil)
+	reg, _, err := loadRegistryWithTypePacks(registrySpec, splitCSV(predicatePacks), splitCSV(typePacks))
 	if err != nil {
 		return fmt.Errorf("load registry: %w", err)
+	}
+
+	// Sampling mode: dump real triples and stop. Answers "does this graph even
+	// contain the edges we are asking about, and under what exact entity names?"
+	// — the question that has to be settled before any name-resolution work.
+	if samplePredicate != "" {
+		rows, qerr := gh.Query(ctx,
+			"MATCH (s)-[r]->(o) WHERE r.name = $p RETURN s.name AS s, r.name AS p, o.name AS o LIMIT $n",
+			map[string]any{"p": samplePredicate, "n": int64(sampleN)})
+		if qerr != nil {
+			return fmt.Errorf("sample %s: %w", samplePredicate, qerr)
+		}
+		fmt.Printf("sample predicate=%s rows=%d\n", samplePredicate, len(rows))
+		for _, r := range rows {
+			fmt.Printf("  %v | %v | %v\n", r["s"], r["p"], r["o"])
+		}
+		return nil
 	}
 	cfg := serveReasoningConfig()
 
