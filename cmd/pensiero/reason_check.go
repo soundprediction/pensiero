@@ -89,9 +89,22 @@ func runReasonCheck(args []string) error {
 	// contain the edges we are asking about, and under what exact entity names?"
 	// — the question that has to be settled before any name-resolution work.
 	if samplePredicate != "" {
-		rows, qerr := gh.Query(ctx,
-			"MATCH (s)-[r]->(o) WHERE r.name = $p RETURN s.name AS s, r.name AS p, o.name AS o LIMIT $n",
-			map[string]any{"p": samplePredicate, "n": int64(sampleN)})
+		// These graphs REIFY edges: (head:Entity)-[:RELATES_TO]->(rel:RelatesToNode_)
+		// -[:RELATES_TO]->(tail:Entity), with the predicate on the middle node. A
+		// direct (s)-[r]->(o) match returns zero rows against this schema and reads
+		// as "the graph has no such edges", which is a very misleading way to be
+		// wrong. Mirrors the predicate-inventory query.
+		where := ""
+		params := map[string]any{"n": int64(sampleN)}
+		if samplePredicate != "*" {
+			where = "WHERE rel.name = $p"
+			params["p"] = samplePredicate
+		}
+		q := fmt.Sprintf(`MATCH (head:Entity)-[:RELATES_TO]->(rel:RelatesToNode_)-[:RELATES_TO]->(tail:Entity)
+%s
+RETURN head.name AS s, rel.name AS p, tail.name AS o
+LIMIT $n`, where)
+		rows, qerr := gh.Query(ctx, q, params)
 		if qerr != nil {
 			return fmt.Errorf("sample %s: %w", samplePredicate, qerr)
 		}
