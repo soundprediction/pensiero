@@ -50,6 +50,7 @@ func runBuildGeneralization(args []string) error {
 	fs := flag.NewFlagSet("build-generalization", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var sourcePath, scope, scopeFile, outPath, backupPath, predicateCSV, predicatePacksCSV, typePacksCSV, taxonomicCSV, taxonomicDirection, registrySpec string
+	var includeDirect bool
 	var minSupport, maxParentLevel int
 	fs.StringVar(&sourcePath, "source", "", "source graph path")
 	fs.StringVar(&scope, "scope", "", "scope name")
@@ -59,6 +60,7 @@ func runBuildGeneralization(args []string) error {
 	fs.IntVar(&minSupport, "min-support", generalization.DefaultMinSupport, "minimum child support for lifted relations")
 	fs.IntVar(&maxParentLevel, "max-parent-level", generalization.DefaultMaxParentLevel, "maximum parent depth to keep")
 	fs.StringVar(&predicateCSV, "predicates", "", "comma-separated predicates; empty uses registry-derived predicates")
+	fs.BoolVar(&includeDirect, "include-direct-relations", false, "also copy in-scope source relations into the output (default: emit only the derived subgraph)")
 	fs.StringVar(&predicatePacksCSV, "predicate-packs", "", "comma-separated predicate packs to extend the general registry")
 	fs.StringVar(&typePacksCSV, "type-packs", "", "comma-separated entity type packs for advisory registry validation")
 	fs.StringVar(&taxonomicCSV, "taxonomic-predicates", "", "comma-separated hierarchy predicates; empty uses registry-derived predicates")
@@ -97,13 +99,14 @@ func runBuildGeneralization(args []string) error {
 	defer source.Close()
 
 	cfg := generalization.Config{
-		Scope:               scope,
-		ScopeEntities:       scopeEntities,
-		Predicates:          splitCSV(predicateCSV),
-		TaxonomicPredicates: splitCSV(taxonomicCSV),
-		TaxonomicDirection:  direction,
-		MaxParentLevel:      maxParentLevel,
-		MinSupport:          minSupport,
+		Scope:                  scope,
+		ScopeEntities:          scopeEntities,
+		Predicates:             splitCSV(predicateCSV),
+		IncludeDirectRelations: includeDirect,
+		TaxonomicPredicates:    splitCSV(taxonomicCSV),
+		TaxonomicDirection:     direction,
+		MaxParentLevel:         maxParentLevel,
+		MinSupport:             minSupport,
 	}
 	graph, err := generalization.Build(ctx, source, reg, cfg)
 	if err != nil {

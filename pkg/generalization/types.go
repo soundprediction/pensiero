@@ -52,6 +52,18 @@ type Config struct {
 	MaxParentLevel      int
 	MinParentSupport    int
 	MinSupport          int
+
+	// IncludeDirectRelations copies every in-scope SOURCE relation into the output
+	// alongside the derived ones. Default false: a generalization graph is meant to
+	// be a small DERIVED subgraph — the taxonomy it selected plus the relations it
+	// lifted onto parents — not a duplicate of its source. Copying them produced an
+	// output the same size as the input (188,570 source edges -> 187,303 "derived"),
+	// which hid the fact that lifting had produced almost nothing and doubled the
+	// storage for no added inference.
+	//
+	// Direct relations are still READ, because lifting is computed from them; this
+	// only controls whether they are re-emitted.
+	IncludeDirectRelations bool
 }
 
 type EntityRef struct {

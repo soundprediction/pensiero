@@ -179,6 +179,11 @@ func assembleGraph(ctx context.Context, cfg Config, reg *reasoning.PredicateRegi
 		row.predicate = meta.Canonical
 		row.confidence = positiveOr(row.confidence, 1)
 		directByChild[sourceKey] = append(directByChild[sourceKey], row)
+		// Direct relations feed lifting but are NOT re-emitted by default: the
+		// derived graph should be the generalizations, not a copy of its source.
+		if !cfg.IncludeDirectRelations {
+			continue
+		}
 		g.addNode(row.target, NodeEndpoint, 0, 0)
 		id := strings.TrimSpace(row.id)
 		if id == "" {
