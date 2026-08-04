@@ -49,9 +49,19 @@ type Config struct {
 	TaxonomicPredicates []string
 	TaxonomicDirection  TaxonomicDirection
 	Predicates          []string
-	MaxParentLevel      int
-	MinParentSupport    int
-	MinSupport          int
+
+	// Directions, when set, derives each taxonomy edge's orientation instead of
+	// trusting the one the graph stores, and drops pairs it cannot orient.
+	//
+	// Leaving this nil preserves the historical behaviour of walking
+	// TaxonomicDirection blindly. That behaviour is only safe on a corpus whose
+	// taxonomy direction has been verified; on the deployed corpus it is a coin
+	// flip (see pkg/generalization/direction.go).
+	Directions DirectionSource
+
+	MaxParentLevel   int
+	MinParentSupport int
+	MinSupport       int
 
 	// IncludeDirectRelations copies every in-scope SOURCE relation into the output
 	// alongside the derived ones. Default false: a generalization graph is meant to
@@ -112,12 +122,25 @@ type Stats struct {
 	EndpointCount       int
 	DirectRelationCount int
 	LiftedRelationCount int
+
+	// TaxonomyEdgesDropped counts source hierarchy edges discarded because no
+	// signal could determine their direction; TaxonomyEdgesFlipped counts those
+	// whose stored orientation was the opposite of the derived one — i.e. edges
+	// that would have been lifted backwards. Both are zero when Config.Directions
+	// is nil.
+	TaxonomyEdgesDropped int
+	TaxonomyEdgesFlipped int
 }
 
 type Builder struct {
 	source reasoning.GraphQuerier
 	reg    *reasoning.PredicateRegistry
 	cfg    Config
+
+	// Direction-derivation tallies, surfaced in Stats so a run reports how much
+	// of the source hierarchy it discarded rather than silently shrinking it.
+	directionDropped int
+	directionFlipped int
 }
 
 type taxonomyRow struct {

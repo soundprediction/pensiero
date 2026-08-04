@@ -157,6 +157,12 @@ func (b *Builder) directTaxonomy(ctx context.Context, children []EntityRef, taxo
 			confidence: anyFloat(firstValue(row, "confidence", "conf")),
 		})
 	}
+	// Re-derive orientation here, at the primitive read: the multi-level walk in
+	// hierarchyRows is built from these edges, so correcting them once means no
+	// traversal or lifting pass ever sees an edge of unknown direction.
+	out, dropped, flipped := applyDirection(b.cfg.Directions, out)
+	b.directionDropped += dropped
+	b.directionFlipped += flipped
 	sortTaxonomyRows(out)
 	return out, nil
 }

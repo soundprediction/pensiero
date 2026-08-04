@@ -58,7 +58,15 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	return assembleGraph(ctx, b.cfg, b.reg, scope, taxonomic, taxRows, directRows)
+	graph, err := assembleGraph(ctx, b.cfg, b.reg, scope, taxonomic, taxRows, directRows)
+	if err != nil {
+		return nil, err
+	}
+	// Report what direction derivation discarded. A hierarchy that silently
+	// shrank is indistinguishable from one that was always small.
+	graph.Stats.TaxonomyEdgesDropped = b.directionDropped
+	graph.Stats.TaxonomyEdgesFlipped = b.directionFlipped
+	return graph, nil
 }
 
 func (c Config) withDefaults() Config {
