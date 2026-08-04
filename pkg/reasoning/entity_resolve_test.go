@@ -111,3 +111,51 @@ func TestNormalizeEntityTokensDropsPunctuationAndInitials(t *testing.T) {
 		}
 	}
 }
+
+// DO NOT "fix" this by adding character-level fuzzy matching.
+//
+// A genuine typo is edit distance 1 ("hypothyrodism"). Clinically OPPOSITE
+// conditions are edit distance 2 and 80-87% similar:
+//
+//	hypothyroidism / hyperthyroidism   edit 2, 87% similar
+//	hypoglycemia   / hyperglycemia     edit 2, 85% similar
+//	hypotension    / hypertension      edit 2, 83% similar
+//	hypokalemia    / hyperkalemia      edit 2, 83% similar
+//
+// Any threshold loose enough to correct a typo is one step from silently
+// rewriting hypoglycemia to hyperglycemia and returning it as logically
+// verified, with a proof, about a patient. The deployed graphs are full of
+// hypo-/hyper- entities, so these collisions are real.
+//
+// Resolution is token-based precisely so this cannot happen: hypo- and hyper-
+// forms are different TOKENS, scoring far below the acceptance floor. Misspelled
+// input resolves to nothing and the claim returns unsupported — the safe
+// failure. Spelling correction belongs upstream, where there is surrounding
+// clinical context to disambiguate with, or in a curated vocabulary's synonym
+// set — not in a blind string match at the point of asserting proof.
+func TestResolveEntityNeverConfusesClinicalOpposites(t *testing.T) {
+	stored := []string{
+		"hyperthyroidism", "hyperglycemia", "hypertension", "hyperkalemia", "hypertonia",
+	}
+	n := NewNativeReasoner(graphWithEntities(stored...), nil, Config{})
+
+	for _, asked := range []string{
+		"hypothyroidism", "hypoglycemia", "hypotension", "hypokalemia", "hypotonia",
+	} {
+		got := n.resolveEntity(context.Background(), asked)
+		if got != asked {
+			t.Fatalf("%q resolved to %q — a clinically OPPOSITE condition; resolution must never do this", asked, got)
+		}
+	}
+}
+
+// A misspelling resolves to nothing rather than to a near neighbour. This is a
+// deliberate recall loss: see TestResolveEntityNeverConfusesClinicalOpposites.
+func TestResolveEntityLeavesMisspellingsUnresolved(t *testing.T) {
+	n := NewNativeReasoner(graphWithEntities("hypothyroidism", "Dementia"), nil, Config{})
+	for _, typo := range []string{"hypothyrodism", "demntia"} {
+		if got := n.resolveEntity(context.Background(), typo); got != typo {
+			t.Fatalf("misspelling %q resolved to %q; it must fail closed", typo, got)
+		}
+	}
+}
