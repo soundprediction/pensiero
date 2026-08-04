@@ -74,6 +74,53 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 	if conflict, proof, err := n.Contradicts(ctx, c); err == nil && conflict {
 		return EntailResult{Verdict: VerdictContradicted, Confidence: 1.0, Best: proof}, nil
 	}
+
+	res, err := n.entailsDirected(ctx, c)
+	if err != nil || res.Verdict == VerdictEntailed {
+		return res, err
+	}
+
+	// Path traversal is DIRECTED (see extension/reasoning: it used to be
+	// undirected, which entailed a claim and its reverse from one stored edge and
+	// emitted a proof for a relationship the graph does not contain). A claim
+	// stated in the inverse direction of how the graph stores it therefore no
+	// longer proves by walking the edge backwards — recover it soundly by
+	// re-asking in the STORED direction using the registry's declared inverse.
+	//
+	// This is not a way back to the old behaviour: the re-ask still has to satisfy
+	// the accepted-predicate check, so "disorder treats GTT" stays unsupported
+	// against a stored "GTT treats disorder" while "disorder treated_by GTT"
+	// proves. The returned proof is the one for the stored direction, which is the
+	// honest citation.
+	if inv, ok := n.inverseClaim(c); ok {
+		if invRes, invErr := n.entailsDirected(ctx, inv); invErr == nil && invRes.Verdict == VerdictEntailed {
+			return invRes, nil
+		}
+	}
+	return res, nil
+}
+
+// inverseClaim swaps subject/object and substitutes the registry's declared
+// inverse predicate. Returns false when the predicate is unknown or declares no
+// inverse, in which case there is nothing sound to re-ask.
+func (n *NativeReasoner) inverseClaim(c Claim) (Claim, bool) {
+	if n.reg == nil {
+		return Claim{}, false
+	}
+	meta, known := n.reg.Canonical(c.Predicate)
+	if !known {
+		return Claim{}, false
+	}
+	inv := strings.TrimSpace(meta.InverseOf)
+	if inv == "" {
+		return Claim{}, false
+	}
+	return Claim{Subject: c.Object, Predicate: inv, Object: c.Subject}, true
+}
+
+// entailsDirected runs one REASON_ENTAILS call exactly as asked, with no
+// inverse recovery.
+func (n *NativeReasoner) entailsDirected(ctx context.Context, c Claim) (EntailResult, error) {
 	var acceptedPredicates []string
 	if n.EnforcePredicate {
 		acceptedPredicates = nativeAcceptedPredicates(n.reg, c.Predicate)
@@ -153,11 +200,19 @@ func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string
 	for _, pred := range predicatesEntailing(reg, target) {
 		add(pred)
 	}
-	if inverse, ok := reg.Inverse(target); ok {
-		for _, pred := range predicatesEntailing(reg, inverse) {
-			add(pred)
-		}
-	}
+	// The INVERSE predicate's closure is deliberately NOT accepted here. It used to
+	// be, and had to be, while path traversal was undirected: a backward walk could
+	// arrive over either the predicate or its inverse, so both had to pass.
+	//
+	// With directed traversal that is unsound — it accepts an edge labelled
+	// "treats" as proof of a "treated_by" claim in the SAME direction, i.e. it
+	// re-erases the direction the traversal fix just restored. Verified on a real
+	// graph: with inverses accepted, "Dementia treats Geriatrics" still entailed
+	// against a stored "Geriatrics TREATS Dementia".
+	//
+	// Inverse claims are instead satisfied by swapping the endpoints and asking for
+	// the inverse predicate (see Entails), which is the direction the graph
+	// actually stores.
 	sort.Slice(out, func(i, j int) bool {
 		return normKey(out[i]) < normKey(out[j])
 	})

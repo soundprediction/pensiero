@@ -465,13 +465,25 @@ std::vector<LogicalPath> findPaths(ClientContext* context, const std::string& so
     // given we use the engine's SHORTEST path mode (bounded, no full enumeration).
     // SHORTEST requires a lower bound of 1, which is fine: an Entity->Entity reified
     // path is always even-length, so the shortest is the fewest logical hops.
+    // DIRECTED traversal. This was previously undirected ("-...-"), which made the
+    // reasoner direction-blind: from a single stored edge (X)-[TREATS]->(Y) it
+    // entailed BOTH "X treats Y" and "Y treats X", and — because the proof's
+    // source/target are taken from the CLAIM, not from the matched edge — it
+    // emitted a proof asserting a relationship that does not exist in the graph.
+    // A fabricated citation is far worse than a missed one, especially where the
+    // proof is surfaced to a clinician as the derivation behind a verdict.
+    //
+    // Inverse claims are NOT lost: the caller resolves a predicate's inverse via
+    // the registry and re-asks with source/target swapped, so "Y treated_by X"
+    // still proves out — it just has to prove out in the direction the graph
+    // actually stores, rather than by walking an edge backwards and relabelling it.
     q << "MATCH (a:Entity {name: '" << cypherEscape(source) << "'})";
     if (!target.empty()) {
         q << ", (b:Entity {name: '" << cypherEscape(target) << "'})"
-          << " MATCH p = (a)-[:RELATES_TO* SHORTEST 1.." << physMax << "]-(b)";
+          << " MATCH p = (a)-[:RELATES_TO* SHORTEST 1.." << physMax << "]->(b)";
     } else {
         // No fixed target: bounded (small physMax) any-endpoint derivation.
-        q << " MATCH p = (a)-[:RELATES_TO* 2.." << physMax << "]-(b:Entity)";
+        q << " MATCH p = (a)-[:RELATES_TO* 2.." << physMax << "]->(b:Entity)";
     }
     // drop molecular bloat (GENE) mid-path (§6 label filtering). Entity nodes carry a
     // labels[] column; predicate (RelatesToNode_) nodes do not, so guard on label(n).

@@ -47,6 +47,11 @@ var generalAliases = map[string]string{
 	"same as": "same_as", "equivalent to": "equivalent_to",
 	"related to": "related_to", "associated with": "associated_with",
 	"depends on": "depends_on", "precedes": "precedes",
+	// Graph-vocabulary spelling: an ingested "A IS_PARENT_OF B" asserts A is the
+	// BROADER term, i.e. A subsumes B. Left unmapped it resolved as undeclared, so
+	// taxonomic closure — the entire point of a generalization graph — could not
+	// run over it.
+	"is_parent_of": "subsumes", "is parent of": "subsumes",
 }
 
 func init() {

@@ -50,10 +50,14 @@ func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
 		{Canonical: "symptom_of", InverseOf: "has_symptom"},
 		{Canonical: "phenotype_of", InverseOf: "has_phenotype", SubPropertyOf: []string{"symptom_of"}},
 	}, nil, nil)
-	var entailsQuery string
+	// Capture EVERY call: an unsupported forward result is now followed by an
+	// inverse re-ask in the stored direction (see
+	// TestNativeReasonerRecoversInverseClaimInStoredDirection), so asserting on a
+	// single captured query would test the wrong call.
+	var entailsQueries []string
 	g := mockGraph{query: func(q string, params map[string]any) ([]map[string]any, error) {
 		if strings.Contains(q, "REASON_ENTAILS") {
-			entailsQuery = q
+			entailsQueries = append(entailsQueries, q)
 			return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
 		}
 		return nil, nil
@@ -67,9 +71,17 @@ func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "CALL REASON_ENTAILS('flu', 'has symptom', 'fever', 4, 'has_phenotype,has_symptom,phenotype_of,symptom_of')"
-	if !strings.Contains(entailsQuery, want) {
-		t.Fatalf("query=%q, want to contain %q", entailsQuery, want)
+	if len(entailsQueries) == 0 {
+		t.Fatal("no REASON_ENTAILS call was made")
+	}
+	want := "CALL REASON_ENTAILS('flu', 'has symptom', 'fever', 4, 'has_phenotype,has_symptom')"
+	if !strings.Contains(entailsQueries[0], want) {
+		t.Fatalf("forward query=%q, want to contain %q", entailsQueries[0], want)
+	}
+	// And the inverse re-ask must carry the same accepted set, swapped ends.
+	wantInv := "CALL REASON_ENTAILS('fever', 'symptom_of', 'flu', 4, 'phenotype_of,symptom_of')"
+	if len(entailsQueries) < 2 || !strings.Contains(entailsQueries[1], wantInv) {
+		t.Fatalf("inverse re-ask missing or wrong; queries=%v", entailsQueries)
 	}
 }
 
@@ -470,4 +482,83 @@ func TestNativeReasonerContradictsHonorsExcludeDeduced(t *testing.T) {
 			t.Fatalf("query=%q unexpectedly contained status exclusion", gotQuery)
 		}
 	})
+}
+
+// Path traversal in the reasoning extension is DIRECTED: it previously walked
+// edges undirected, which entailed a claim AND its reverse from a single stored
+// edge and emitted a proof for a relationship the graph does not contain. The
+// cost of directedness is that a claim stated in the inverse direction of how the
+// graph stores it no longer proves by walking backwards — so Entails re-asks in
+// the STORED direction using the registry's declared inverse.
+func TestNativeReasonerRecoversInverseClaimInStoredDirection(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{
+		{Canonical: "treats", InverseOf: "treated_by"},
+		{Canonical: "treated_by", InverseOf: "treats"},
+	}, nil, nil)
+
+	// The graph stores only: drug -treats-> disease.
+	var asked []string
+	g := mockGraph{query: func(q string, _ map[string]any) ([]map[string]any, error) {
+		if !strings.Contains(q, "REASON_ENTAILS") {
+			return nil, nil
+		}
+		asked = append(asked, q)
+		if strings.Contains(q, "'drug', 'treats', 'disease'") {
+			return []map[string]any{{"verdict": string(VerdictEntailed), "confidence": 0.8,
+				"proof": `[{"edge_id":"e1","rule":"composition","predicate":"treats","source":"drug","target":"disease","confidence":0.8}]`}}, nil
+		}
+		return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+
+	// "disease treated_by drug" is the legitimate inverse — it must still prove,
+	// via a re-ask in the stored direction.
+	res, err := n.Entails(context.Background(), Claim{Subject: "disease", Predicate: "treated_by", Object: "drug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict != VerdictEntailed {
+		t.Fatalf("legitimate inverse claim should still entail, got %q", res.Verdict)
+	}
+	if len(asked) != 2 {
+		t.Fatalf("want a forward attempt then an inverse re-ask, got %d queries: %v", len(asked), asked)
+	}
+	// The proof must describe the STORED direction, not the claim's direction —
+	// that honesty is the entire point of the change.
+	if res.Best == nil || res.Best.Source != "drug" || res.Best.Target != "disease" {
+		t.Fatalf("proof should cite the stored direction drug->disease, got %+v", res.Best)
+	}
+}
+
+// The inverse re-ask must not become a back door to the old direction-blind
+// behaviour: a REVERSED claim (not an inverse one) must stay unsupported.
+func TestNativeReasonerRejectsReversedClaim(t *testing.T) {
+	reg := NewPredicateRegistry([]PredicateMeta{
+		{Canonical: "treats", InverseOf: "treated_by"},
+		{Canonical: "treated_by", InverseOf: "treats"},
+	}, nil, nil)
+
+	g := mockGraph{query: func(q string, _ map[string]any) ([]map[string]any, error) {
+		if !strings.Contains(q, "REASON_ENTAILS") {
+			return nil, nil
+		}
+		// Only drug -treats-> disease exists. Directed traversal finds nothing else.
+		if strings.Contains(q, "'drug', 'treats', 'disease'") {
+			return []map[string]any{{"verdict": string(VerdictEntailed), "confidence": 0.8,
+				"proof": `[{"edge_id":"e1","rule":"composition","predicate":"treats","source":"drug","target":"disease","confidence":0.8}]`}}, nil
+		}
+		return []map[string]any{{"verdict": string(VerdictUnsupported), "confidence": 0.0, "proof": "[]"}}, nil
+	}}
+	n := NewNativeReasoner(g, reg, Config{}.WithExcludeDeduced(false))
+
+	// "disease treats drug" is the REVERSE of the stored edge, not its inverse.
+	// Its inverse re-ask is "drug treated_by disease", which the graph also does
+	// not assert — so this must stay unsupported.
+	res, err := n.Entails(context.Background(), Claim{Subject: "disease", Predicate: "treats", Object: "drug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict == VerdictEntailed {
+		t.Fatal("a reversed claim must not entail — that is the fabricated-citation bug")
+	}
 }
