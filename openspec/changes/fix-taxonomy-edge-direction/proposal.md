@@ -123,10 +123,26 @@ Production opens graphs read-only, and a ladybug 0.19 read-write open irreversib
 - Reuse the registry's `is_a`/`subsumes` inverse declaration
   (`pkg/reasoning/general_primitives.go`); do not introduce a parallel direction vocabulary.
 
-## Expected yield, stated honestly
+## Measured yield
 
-With GO alone: ~8% of pairs. With lexical added and assuming it validates: ~20%. With
-MONDO/HPO/CHEBI added: unmeasured, plausibly a majority, and that measurement is task 4.
+Implemented and validated against the deployed corpus (`thyroid.ladybug`, 3,209 pairs):
+
+| Ontology set | Names matched | Pairs oriented | Stored backwards |
+|---|---:|---:|---:|
+| GO only | 11.9% | 258 (8.0%) | 53 |
+| GO + MONDO + HPO + DOID | 84.4% | 1,772 (55.2%) | 326 |
+| … plus lexical token-subset | — | **1,885 (58.7%)** | **338** |
+
+**338 pairs are stored only in the orientation opposite to the one the ontologies assign** —
+those are the edges generalization would have lifted backwards.
+
+The lexical signal agrees with the ontologies on **96.4% of the 331 pairs both can adjudicate**,
+which is what licenses enabling it. It contributes 113 additional pairs (+3.5pp).
+
+The remaining 41.3% is dropped. Note that "both endpoints matched but unrelated" (2,205 matched
+pairs vs 1,772 oriented) partly reflects endpoints living in *different* ontologies — a GO
+process and a MONDO disease are never in one another's `is_a` closure — which is correctly
+undetermined rather than a failure.
 
 **A small hierarchy that is correct is usable; a complete one that is 50% inverted is not.**
 If the final coverage is low, the correct response is to lift only where direction is known and

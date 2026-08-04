@@ -41,8 +41,16 @@ func TestDeployedCorpusReproducesMeasuredFigures(t *testing.T) {
 	}
 
 	o := NewOntology()
-	if err := o.LoadOBOFile(oboPath); err != nil {
-		t.Fatalf("load ontology: %v", err)
+	// Comma-separated, in priority order: when two ontologies name the same
+	// concept the first loaded wins, so the most authoritative for a domain
+	// goes first.
+	for _, p := range strings.Split(oboPath, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if err := o.LoadOBOFile(p); err != nil {
+			t.Fatalf("load ontology %s: %v", p, err)
+		}
 	}
 	names, terms := o.Size()
 	t.Logf("ontology: %d indexed names, %d terms with parents", names, terms)
@@ -50,7 +58,35 @@ func TestDeployedCorpusReproducesMeasuredFigures(t *testing.T) {
 	pairs := loadPairsCSV(t, pairsPath)
 	t.Logf("corpus: %d distinct pairs", len(pairs))
 
+	// Name-match coverage is the diagnostic that says which ontology to add next:
+	// a pair is only adjudicable when BOTH endpoints match a term, so unmatched
+	// names are the ceiling on everything downstream.
+	distinct := map[string]bool{}
+	for _, p := range pairs {
+		distinct[p.A] = true
+		distinct[p.B] = true
+	}
+	matched, bothMatched := 0, 0
+	for n := range distinct {
+		if _, ok := o.lookup(n); ok {
+			matched++
+		}
+	}
+	for _, p := range pairs {
+		_, okA := o.lookup(p.A)
+		_, okB := o.lookup(p.B)
+		if okA && okB {
+			bothMatched++
+		}
+	}
+	t.Logf("name coverage: %d/%d distinct names matched (%.1f%%); %d/%d pairs have BOTH endpoints matched (%.1f%%)",
+		matched, len(distinct), 100*float64(matched)/float64(len(distinct)),
+		bothMatched, len(pairs), 100*float64(bothMatched)/float64(len(pairs)))
+
 	d := NewDeriver(o)
+	if os.Getenv("PENSIERO_TAXONOMY_LEXICAL") == "1" {
+		d.EnableLexical(true)
+	}
 	_, rep := d.DeriveAll(pairs, 20)
 
 	t.Logf("oriented=%d undetermined=%d by_signal=%v contradicts_stored=%d",
