@@ -597,11 +597,33 @@ func taxonomicQueryList(reg *reasoning.PredicateRegistry, raw []string, canonica
 	if values := exactList(raw); len(values) > 0 {
 		return values
 	}
-	list := queryPredicateList(reg, raw, canonical)
-	set := stringSet(list)
+	set := stringSet(queryPredicateList(reg, raw, canonical))
+
+	// A hierarchy edge may be stored as EITHER member of an inverse pair: the
+	// deployed corpus writes "IS_PARENT_OF" (canonicalises to subsumes), while the
+	// default taxonomic predicate is is_a. Querying only one member found 0 of
+	// 5,028 hierarchy edges and lifted nothing.
+	//
+	// Including both is correct now that orientation is DERIVED rather than
+	// inferred from which predicate was used: the query's job is to find the
+	// edges, and Config.Directions decides which way each one points.
+	for _, canon := range canonical {
+		inv, ok := reg.Inverse(canon)
+		if !ok || strings.TrimSpace(inv) == "" {
+			continue
+		}
+		for _, form := range append(reg.SurfaceForms(inv), inv) {
+			if form = strings.TrimSpace(form); form != "" {
+				set[form] = true
+				set[strings.ToUpper(form)] = true
+			}
+		}
+	}
+
 	if set["is_a"] {
 		for _, value := range []string{"is_a", "is a", "isa", "subclass of", "subclass_of", "subClassOf", "type of", "subtype of"} {
 			set[value] = true
+			set[strings.ToUpper(value)] = true
 		}
 	}
 	return sortedKeys(set)
