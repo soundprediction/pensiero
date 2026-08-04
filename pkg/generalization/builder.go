@@ -551,15 +551,43 @@ func canonicalList(reg *reasoning.PredicateRegistry, in []string) []string {
 	return sortedKeys(set)
 }
 
+// queryPredicateList builds the predicate names to MATCH against stored edges.
+//
+// Graphs store the SOURCE vocabulary's spelling ("IS_PARENT_OF",
+// "HAS_PHENOTYPE"), not the registry's canonical form ("subsumes",
+// "has_phenotype"). Filtering on canonical names alone therefore matched
+// nothing: measured on the deployed thyroid graph, a default build selected 0
+// taxonomy edges out of 5,028 and lifted 0 relations, which read as "this corpus
+// has no hierarchy" instead of "the names do not line up". Passing the stored
+// spellings by hand recovered 1,024 lifted relations from the same graph.
+//
+// So each canonical is expanded to every registered surface form. Values are
+// normalized (lower-case, trimmed) and the query normalizes the stored name the
+// same way, so matching no longer depends on the source's casing convention.
+//
+// An explicit caller-supplied list is still honoured verbatim: an operator
+// naming a predicate the registry does not know must not have it silently
+// dropped.
 func queryPredicateList(reg *reasoning.PredicateRegistry, raw []string, canonical []string) []string {
+	// An explicit caller-supplied list is honoured verbatim: an operator naming a
+	// predicate the registry does not know must not have it silently dropped.
 	if values := exactList(raw); len(values) > 0 {
 		return values
 	}
 	set := map[string]bool{}
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			// Both cases, because the match is exact and the two vocabularies
+			// disagree on casing: registries hold "is_parent_of", graphs store
+			// "IS_PARENT_OF".
+			set[v] = true
+			set[strings.ToUpper(v)] = true
+		}
+	}
 	for _, value := range canonical {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			set[value] = true
+		add(value)
+		for _, form := range reg.SurfaceForms(value) {
+			add(form)
 		}
 	}
 	return sortedKeys(set)

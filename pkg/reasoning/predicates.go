@@ -263,3 +263,34 @@ func (r *PredicateRegistry) TransitivePreds() []string {
 	}
 	return out
 }
+
+// SurfaceForms returns every registered spelling that normalizes to canon,
+// including canon itself, in deterministic order.
+//
+// Consumers that FILTER a graph by predicate need this: graphs store the source
+// vocabulary's spelling ("IS_PARENT_OF", "HAS_PHENOTYPE"), while the registry
+// works in canonical form ("subsumes", "has_phenotype"). Matching a stored name
+// against canonical names alone silently selects nothing, which reads as "the
+// graph has no such relations" rather than as a vocabulary mismatch.
+//
+// Returned values are normalized (lower-cased, trimmed), so callers should
+// compare against a likewise-normalized stored name rather than assuming case.
+func (r *PredicateRegistry) SurfaceForms(canon string) []string {
+	if r == nil {
+		return nil
+	}
+	target := normKey(canon)
+	seen := map[string]bool{}
+	for raw, m := range r.byRaw {
+		if normKey(m.Canonical) == target {
+			seen[raw] = true
+		}
+	}
+	seen[target] = true
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
