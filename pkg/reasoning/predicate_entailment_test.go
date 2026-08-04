@@ -50,7 +50,17 @@ func TestPredicatesEntailingCycleSafe(t *testing.T) {
 	}
 }
 
-func TestNativeAcceptedPredicatesIncludesInverseEntailers(t *testing.T) {
+// The accepted set must NOT contain the inverse predicate's closure. It did while
+// path traversal was undirected, and had to: a backward walk could arrive over
+// either the predicate or its inverse. With directed traversal that is unsound —
+// accepting "symptom_of" for a "has_symptom" claim in the SAME direction re-erases
+// the direction the traversal fix restored. Verified on a real graph: with
+// inverses accepted, "Dementia treats Geriatrics" still entailed against a stored
+// "Geriatrics TREATS Dementia".
+//
+// Inverse claims are satisfied instead by swapping the endpoints and asking for
+// the inverse predicate — see TestNativeReasonerRecoversInverseClaimInStoredDirection.
+func TestNativeAcceptedPredicatesExcludesInverseEntailers(t *testing.T) {
 	reg := NewPredicateRegistry([]PredicateMeta{
 		{Canonical: "has_symptom", InverseOf: "symptom_of"},
 		{Canonical: "has_phenotype", InverseOf: "phenotype_of", SubPropertyOf: []string{"has_symptom"}},
@@ -59,9 +69,9 @@ func TestNativeAcceptedPredicatesIncludesInverseEntailers(t *testing.T) {
 	}, nil, nil)
 
 	got := nativeAcceptedPredicates(reg, "has_symptom")
-	want := []string{"has_phenotype", "has_symptom", "phenotype_of", "symptom_of"}
+	want := []string{"has_phenotype", "has_symptom"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("nativeAcceptedPredicates(has_symptom)=%v, want %v", got, want)
+		t.Fatalf("nativeAcceptedPredicates(has_symptom)=%v, want %v (inverses must be reached by swapping endpoints, not by predicate-set membership)", got, want)
 	}
 }
 

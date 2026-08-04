@@ -74,12 +74,12 @@ func TestNativeReasonerEntailsUsesAcceptedPredicatesWhenEnforced(t *testing.T) {
 	if len(entailsQueries) == 0 {
 		t.Fatal("no REASON_ENTAILS call was made")
 	}
-	want := "CALL REASON_ENTAILS('flu', 'has symptom', 'fever', 4, 'has_phenotype,has_symptom,phenotype_of,symptom_of')"
+	want := "CALL REASON_ENTAILS('flu', 'has symptom', 'fever', 4, 'has_phenotype,has_symptom')"
 	if !strings.Contains(entailsQueries[0], want) {
 		t.Fatalf("forward query=%q, want to contain %q", entailsQueries[0], want)
 	}
 	// And the inverse re-ask must carry the same accepted set, swapped ends.
-	wantInv := "CALL REASON_ENTAILS('fever', 'symptom_of', 'flu', 4, 'has_phenotype,has_symptom,phenotype_of,symptom_of')"
+	wantInv := "CALL REASON_ENTAILS('fever', 'symptom_of', 'flu', 4, 'phenotype_of,symptom_of')"
 	if len(entailsQueries) < 2 || !strings.Contains(entailsQueries[1], wantInv) {
 		t.Fatalf("inverse re-ask missing or wrong; queries=%v", entailsQueries)
 	}

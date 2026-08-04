@@ -200,11 +200,19 @@ func nativeAcceptedPredicates(reg *PredicateRegistry, predicate string) []string
 	for _, pred := range predicatesEntailing(reg, target) {
 		add(pred)
 	}
-	if inverse, ok := reg.Inverse(target); ok {
-		for _, pred := range predicatesEntailing(reg, inverse) {
-			add(pred)
-		}
-	}
+	// The INVERSE predicate's closure is deliberately NOT accepted here. It used to
+	// be, and had to be, while path traversal was undirected: a backward walk could
+	// arrive over either the predicate or its inverse, so both had to pass.
+	//
+	// With directed traversal that is unsound — it accepts an edge labelled
+	// "treats" as proof of a "treated_by" claim in the SAME direction, i.e. it
+	// re-erases the direction the traversal fix just restored. Verified on a real
+	// graph: with inverses accepted, "Dementia treats Geriatrics" still entailed
+	// against a stored "Geriatrics TREATS Dementia".
+	//
+	// Inverse claims are instead satisfied by swapping the endpoints and asking for
+	// the inverse predicate (see Entails), which is the direction the graph
+	// actually stores.
 	sort.Slice(out, func(i, j int) bool {
 		return normKey(out[i]) < normKey(out[j])
 	})
