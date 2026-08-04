@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/soundprediction/pensiero/pkg/generalization"
 	"github.com/soundprediction/pensiero/pkg/reasoning"
+	"github.com/soundprediction/pensiero/pkg/taxonomy"
 )
 
 type graphHandle interface {
@@ -49,8 +51,8 @@ func run(args []string) error {
 func runBuildGeneralization(args []string) error {
 	fs := flag.NewFlagSet("build-generalization", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var sourcePath, scope, scopeFile, outPath, backupPath, predicateCSV, predicatePacksCSV, typePacksCSV, taxonomicCSV, taxonomicDirection, registrySpec string
-	var includeDirect bool
+	var sourcePath, scope, scopeFile, outPath, backupPath, predicateCSV, predicatePacksCSV, typePacksCSV, taxonomicCSV, taxonomicDirection, registrySpec, ontologyCSV string
+	var includeDirect, lexicalDirection bool
 	var minSupport, maxParentLevel int
 	fs.StringVar(&sourcePath, "source", "", "source graph path")
 	fs.StringVar(&scope, "scope", "", "scope name")
@@ -66,6 +68,8 @@ func runBuildGeneralization(args []string) error {
 	fs.StringVar(&taxonomicCSV, "taxonomic-predicates", "", "comma-separated hierarchy predicates; empty uses registry-derived predicates")
 	fs.StringVar(&taxonomicDirection, "taxonomic-direction", string(generalization.TaxonomicDirectionChildToParent), "hierarchy edge direction: child-to-parent or parent-to-child")
 	fs.StringVar(&registrySpec, "registry", "general", "general or path to a registry JSON file")
+	fs.StringVar(&ontologyCSV, "ontology", "", "comma-separated OBO files (priority order) used to DERIVE hierarchy direction; without this, stored direction is trusted, which is measurably a coin flip")
+	fs.BoolVar(&lexicalDirection, "ontology-lexical", false, "additionally derive direction from token-subset naming; only enable once its precision has been measured against the ontology-adjudicable subset")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -98,6 +102,16 @@ func runBuildGeneralization(args []string) error {
 	}
 	defer source.Close()
 
+	// Hierarchy direction is DERIVED from published ontologies when any are
+	// supplied. Stored direction is not evidence: measured on the deployed corpus,
+	// adjudicable IS_PARENT_OF edges run 51.8% parent->child and 48.2% backwards.
+	// With no --ontology the historical behaviour is preserved, so this is opt-in
+	// rather than a silent change to every existing build.
+	directions, err := buildDirectionSource(splitCSV(ontologyCSV), lexicalDirection)
+	if err != nil {
+		return err
+	}
+
 	cfg := generalization.Config{
 		Scope:                  scope,
 		ScopeEntities:          scopeEntities,
@@ -105,6 +119,7 @@ func runBuildGeneralization(args []string) error {
 		IncludeDirectRelations: includeDirect,
 		TaxonomicPredicates:    splitCSV(taxonomicCSV),
 		TaxonomicDirection:     direction,
+		Directions:             directions,
 		MaxParentLevel:         maxParentLevel,
 		MinSupport:             minSupport,
 	}
@@ -161,7 +176,7 @@ func runBuildGeneralization(args []string) error {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--backup-db <dropped.ladybug>] [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--type-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--igl-quiet 3s] [--igl-min-publish 30s] [--leader-mode flock|none|k8s-lease] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path] [--golden-file file] [--predicate-packs list] [--type-packs list] [--inventory-sample n]\n       pensiero serve --source-dir <dir> --grpc-addr <addr> [--default-topic topic] [--max-open-topics n] [--health-addr addr]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
+	return fmt.Errorf("usage: pensiero build-generalization --source <graph.ladybug> --scope <name> --out <scope.g_g.ladybug> [--backup-db <dropped.ladybug>] [--scope-entities <file>] [--min-support k] [--max-parent-level n] [--predicates list] [--predicate-packs list] [--type-packs list] [--taxonomic-predicates list] [--taxonomic-direction child-to-parent|parent-to-child] [--ontology a.obo,b.obo] [--ontology-lexical] [--registry general|path]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> [--interval 1m] [--igl-quiet 3s] [--igl-min-publish 30s] [--leader-mode flock|none|k8s-lease] [--health-addr addr] [--grpc-addr addr] [--grpc-pool-size n] [--backend ladybug-native|symbolic-graph] [--reasoning-extension path] [--golden-file file] [--predicate-packs list] [--type-packs list] [--inventory-sample n]\n       pensiero serve --source-dir <dir> --grpc-addr <addr> [--default-topic topic] [--max-open-topics n] [--health-addr addr]\n       pensiero serve --source <graph.ladybug> (--scopes <name[,name]> | --scopes-dir <dir>) --out-dir <dir> --once")
 }
 
 func backupDroppedEdges(ctx context.Context, source reasoning.GraphQuerier, reg *reasoning.PredicateRegistry, cfg generalization.Config, graph *generalization.Graph, backupPath string) {
@@ -279,4 +294,36 @@ func printStats(g *generalization.Graph) {
 		g.Stats.DirectRelationCount,
 		g.Stats.LiftedRelationCount,
 	)
+}
+
+// buildDirectionSource loads the ontologies used to derive hierarchy direction.
+//
+// Returns nil when no ontology is supplied, which leaves generalization on its
+// historical behaviour of walking the stored direction. That default is only
+// safe on a corpus whose direction has been verified; on the deployed corpus it
+// is a coin flip, which is what --ontology exists to fix.
+//
+// Loading is strict: a named ontology that cannot be read is an ERROR, not a
+// warning. Silently continuing would build a graph with far less direction
+// evidence than the operator asked for, and the result would look successful.
+func buildDirectionSource(oboPaths []string, lexical bool) (generalization.DirectionSource, error) {
+	if len(oboPaths) == 0 {
+		if lexical {
+			return nil, fmt.Errorf("--ontology-lexical requires at least one --ontology: the lexical signal is only trustworthy once measured against an ontology-adjudicable subset")
+		}
+		return nil, nil
+	}
+	ont := taxonomy.NewOntology()
+	for _, p := range oboPaths {
+		if err := ont.LoadOBOFile(p); err != nil {
+			return nil, fmt.Errorf("load ontology: %w", err)
+		}
+	}
+	names, terms := ont.Size()
+	log.Printf("taxonomy: loaded %d ontology file(s), %d indexed names, %d terms with parents (lexical=%v)",
+		len(oboPaths), names, terms, lexical)
+
+	d := taxonomy.NewDeriver(ont)
+	d.EnableLexical(lexical)
+	return d, nil
 }
