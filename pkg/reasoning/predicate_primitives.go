@@ -81,7 +81,16 @@ var medicalAliases = map[string]string{
 	"treats":         "treats", "treated by": "treated_by", "treated with": "treated_by",
 	"used to treat": "treats", "indicated for": "treats",
 	"contraindicated for": "contraindicated_for",
-	"interacts with":      "interacts_with", "interacts": "interacts_with", "interact": "interacts_with",
+	// Graph-vocabulary spellings. Ingested graphs store the SOURCE vocabulary's
+	// name, and lookup normalises only case — so a stored predicate differing from
+	// the canonical by more than case resolves as UNDECLARED and no inverse or
+	// sub-property entailment can fire for it. Verified live: the graphs' TREATS /
+	// HAS_PHENOTYPE / CAUSES matched, but CONTRAINDICATED and ASSOCIATION did not,
+	// which is why the contradiction probe (a "treats" claim expected to conflict
+	// with a CONTRAINDICATED edge) could never once return "contradicted".
+	"contraindicated": "contraindicated_for",
+	"association":     "associated_with",
+	"interacts with":  "interacts_with", "interacts": "interacts_with", "interact": "interacts_with",
 	"inhibits": "inhibits", "inhibit": "inhibits", "inhibited by": "inhibited_by",
 	"activates": "activates", "activate": "activates", "activated by": "activated_by",
 	"diagnosed by": "diagnosed_by", "diagnoses": "diagnoses",

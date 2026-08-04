@@ -74,3 +74,50 @@ func TestPredicatesEntailingIncludesUnknownTargetItself(t *testing.T) {
 		t.Fatalf("predicatesEntailing(external)=%v, want %v", got, want)
 	}
 }
+
+// Ingested graphs store the SOURCE vocabulary's predicate spelling, and registry
+// lookup normalises only case — so a stored name differing from the canonical by
+// more than case resolves as UNDECLARED and no inverse or sub-property entailment
+// can fire for it. Verified live: TREATS/HAS_PHENOTYPE/CAUSES matched while
+// CONTRAINDICATED and ASSOCIATION did not, which is why the DDx contradiction
+// probe (a "treats" claim expected to conflict with a CONTRAINDICATED edge) never
+// once returned "contradicted".
+func TestGraphVocabularyPredicatesResolve(t *testing.T) {
+	reg, err := BuildRegistry([]string{"medical"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for raw, want := range map[string]string{
+		"CONTRAINDICATED": "contraindicated_for",
+		"ASSOCIATION":     "associated_with",
+		"IS_PARENT_OF":    "subsumes",
+		"HAS_PHENOTYPE":   "has_phenotype",
+		"TREATS":          "treats",
+		"CAUSES":          "causes",
+	} {
+		meta, ok := reg.Canonical(raw)
+		if !ok {
+			t.Errorf("%s: unresolved — no inverse or sub-property entailment can fire for it", raw)
+			continue
+		}
+		if meta.Canonical != want {
+			t.Errorf("%s resolved to %q, want %q", raw, meta.Canonical, want)
+		}
+	}
+}
+
+// Predicates whose meaning would be CHANGED by a mapping must stay undeclared.
+// NEGATIVELY_CORRELATES is the one that matters: folding it into correlated_with
+// discards the negation and would let an inverse relationship read as supporting
+// evidence. Silence is the safe answer; a wrong mapping is not.
+func TestAmbiguousGraphPredicatesStayUnmapped(t *testing.T) {
+	reg, err := BuildRegistry([]string{"medical"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"NEGATIVELY_CORRELATES", "POSITIVELY_CORRELATES", "EXPRESSES", "SYNERGIZES", "TARGETS"} {
+		if meta, ok := reg.Canonical(raw); ok {
+			t.Errorf("%s should stay undeclared rather than be guessed at, got %q", raw, meta.Canonical)
+		}
+	}
+}
