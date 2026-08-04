@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // NativeBackendName is the registry key for the in-engine ladybug extension
@@ -30,6 +32,12 @@ type NativeReasoner struct {
 	cfg                 Config
 	hasProvenanceStatus bool
 	EnforcePredicate    bool
+
+	// entityCache memoizes caller-supplied entity name -> the exact name stored in
+	// the graph. Resolution costs graph queries and the same handful of condition
+	// and finding names recur across every claim in a differential.
+	entityCache sync.Map
+	entityCount atomic.Int64
 }
 
 func NewNativeReasoner(g GraphQuerier, reg *PredicateRegistry, cfg Config) *NativeReasoner {
@@ -74,6 +82,14 @@ func (n *NativeReasoner) Entails(ctx context.Context, c Claim) (EntailResult, er
 	if conflict, proof, err := n.Contradicts(ctx, c); err == nil && conflict {
 		return EntailResult{Verdict: VerdictContradicted, Confidence: 1.0, Best: proof}, nil
 	}
+
+	// Anchor the claim on names the graph actually uses. REASON_ENTAILS matches
+	// entity names EXACTLY, and callers send the generic clinical form
+	// ("Hypothyroidism") while graphs store the source vocabulary's spelling
+	// ("Autoimmune hypothyroidism", lowercase "acromegaly"). Without this every
+	// claim is unsupported regardless of how sound the traversal is.
+	c.Subject = n.resolveEntity(ctx, c.Subject)
+	c.Object = n.resolveEntity(ctx, c.Object)
 
 	res, err := n.entailsDirected(ctx, c)
 	if err != nil || res.Verdict == VerdictEntailed {
