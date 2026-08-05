@@ -79,11 +79,19 @@ type Config struct {
 type EntityRef struct {
 	ID   string
 	Name string
+	// Labels are the SOURCE entity's types (DISEASE, SYMPTOM, DRUG, ...). They
+	// must survive into the derived graph: pkg/reasoning/orientation.go repairs
+	// stored clinical-relation direction from endpoint types, and a derived graph
+	// that drops them cannot be corrected at query time — making it strictly less
+	// usable than its source.
+	Labels []string
 }
 
 type Node struct {
-	ID      string
-	Name    string
+	ID   string
+	Name string
+	// Labels carries the source entity's types through to the emitter.
+	Labels  []string
 	Kind    NodeKind
 	Depth   int
 	Support int

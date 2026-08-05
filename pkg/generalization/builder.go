@@ -460,12 +460,15 @@ func (g *graphAssembler) addNode(ref EntityRef, kind NodeKind, depth, support in
 	}
 	n := g.nodes[id]
 	if n == nil {
-		n = &Node{ID: id, Name: nodeName(ref), Kind: kind, Depth: depth, Support: support}
+		n = &Node{ID: id, Name: nodeName(ref), Labels: ref.Labels, Kind: kind, Depth: depth, Support: support}
 		g.nodes[id] = n
 		return
 	}
 	if n.Name == "" {
 		n.Name = nodeName(ref)
+	}
+	if len(n.Labels) == 0 {
+		n.Labels = ref.Labels
 	}
 	if nodeRank(kind) < nodeRank(n.Kind) {
 		n.Kind = kind

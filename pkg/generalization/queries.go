@@ -36,7 +36,7 @@ func (b *Builder) scopeEntities(ctx context.Context) ([]EntityRef, error) {
 		if err := checkBuildContext(ctx); err != nil {
 			return nil, err
 		}
-		ref := EntityRef{ID: anyString(row["id"]), Name: anyString(row["name"])}
+		ref := EntityRef{ID: anyString(row["id"]), Name: anyString(row["name"]), Labels: anyStringSlice(row["labels"])}
 		if ref.ID == "" {
 			ref.ID = anyString(row["uuid"])
 		}
@@ -226,7 +226,7 @@ func scopeEntitiesCypher() string {
 	return `
 MATCH (n:Entity)
 WHERE n.group_id = $scope
-RETURN n.uuid AS id, n.name AS name
+RETURN n.uuid AS id, n.name AS name, coalesce(n.labels, []) AS labels
 `
 }
 
@@ -743,5 +743,28 @@ func anyFloat(v any) float64 {
 		return float64(t)
 	default:
 		return 0
+	}
+}
+
+// anyStringSlice reads a graph column as []string, tolerating the []any-of-string
+// shape the driver produces. Returns nil when absent or not a string list, so a
+// graph without labels degrades to "no types known" rather than erroring.
+func anyStringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
 	}
 }
