@@ -36,7 +36,7 @@ func (b *Builder) scopeEntities(ctx context.Context) ([]EntityRef, error) {
 		if err := checkBuildContext(ctx); err != nil {
 			return nil, err
 		}
-		ref := EntityRef{ID: anyString(row["id"]), Name: anyString(row["name"])}
+		ref := EntityRef{ID: anyString(row["id"]), Name: anyString(row["name"]), Labels: anyStringSlice(row["labels"])}
 		if ref.ID == "" {
 			ref.ID = anyString(row["uuid"])
 		}
@@ -157,6 +157,12 @@ func (b *Builder) directTaxonomy(ctx context.Context, children []EntityRef, taxo
 			confidence: anyFloat(firstValue(row, "confidence", "conf")),
 		})
 	}
+	// Re-derive orientation here, at the primitive read: the multi-level walk in
+	// hierarchyRows is built from these edges, so correcting them once means no
+	// traversal or lifting pass ever sees an edge of unknown direction.
+	out, dropped, flipped := applyDirection(b.cfg.Directions, out)
+	b.directionDropped += dropped
+	b.directionFlipped += flipped
 	sortTaxonomyRows(out)
 	return out, nil
 }
@@ -181,12 +187,14 @@ func (b *Builder) directRelations(ctx context.Context, scope []EntityRef, predic
 			return nil, err
 		}
 		source := EntityRef{
-			ID:   firstString(row, "source_id", "child_id", "source_uuid"),
-			Name: firstString(row, "source_name", "child_name"),
+			ID:     firstString(row, "source_id", "child_id", "source_uuid"),
+			Name:   firstString(row, "source_name", "child_name"),
+			Labels: anyStringSlice(row["source_labels"]),
 		}
 		target := EntityRef{
-			ID:   firstString(row, "target_id", "object_id", "target_uuid"),
-			Name: firstString(row, "target_name", "object_name"),
+			ID:     firstString(row, "target_id", "object_id", "target_uuid"),
+			Name:   firstString(row, "target_name", "object_name"),
+			Labels: anyStringSlice(row["target_labels"]),
 		}
 		out = append(out, directRow{
 			source:     source,
@@ -220,7 +228,7 @@ func scopeEntitiesCypher() string {
 	return `
 MATCH (n:Entity)
 WHERE n.group_id = $scope
-RETURN n.uuid AS id, n.name AS name
+RETURN n.uuid AS id, n.name AS name, coalesce(n.labels, []) AS labels
 `
 }
 
@@ -280,8 +288,10 @@ WHERE (source.uuid IN $entity_refs OR source.name IN $entity_refs OR lower(sourc
   AND rel.name IN $predicates
 RETURN source.uuid AS source_id,
        source.name AS source_name,
+       coalesce(source.labels, []) AS source_labels,
        target.uuid AS target_id,
        target.name AS target_name,
+       coalesce(target.labels, []) AS target_labels,
        rel.uuid AS edge_id,
        rel.name AS predicate,
        1.0 AS confidence
@@ -737,5 +747,28 @@ func anyFloat(v any) float64 {
 		return float64(t)
 	default:
 		return 0
+	}
+}
+
+// anyStringSlice reads a graph column as []string, tolerating the []any-of-string
+// shape the driver produces. Returns nil when absent or not a string list, so a
+// graph without labels degrades to "no types known" rather than erroring.
+func anyStringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
 	}
 }

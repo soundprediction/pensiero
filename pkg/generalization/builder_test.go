@@ -205,8 +205,46 @@ func TestBuildLiftsSharedRelationAtMinSupport(t *testing.T) {
 	if findRelation(g, "P", "R", "Z", true) != nil {
 		t.Fatalf("did not expect P R Z below support")
 	}
+	// Direct source relations are NOT re-emitted by default. A generalization
+	// graph is meant to be a small DERIVED subgraph — the selected taxonomy plus
+	// the relations lifted onto parents. Copying the source produced an output the
+	// same size as its input (188,570 source edges -> 187,303 "derived" on a real
+	// deployed graph), which hid the fact that lifting had produced almost nothing.
+	if findRelation(g, "A", "R", "Y", false) != nil {
+		t.Fatalf("direct A R Y should not be copied into the derived graph by default")
+	}
+}
+
+// The previous behaviour is retained behind an explicit opt-in, for callers that
+// want a self-contained graph rather than a derived overlay.
+func TestBuildCanRetainDirectRelationsWhenRequested(t *testing.T) {
+	ctx := context.Background()
+	src := fakeSource{
+		taxonomy: []map[string]any{
+			taxRow("A", "P", 1),
+			taxRow("B", "P", 1),
+		},
+		direct: []map[string]any{
+			relRow("e1", "A", "R", "Y"),
+			relRow("e2", "B", "R", "Y"),
+		},
+	}
+	g, err := Build(ctx, src, testRegistry(), Config{
+		ScopeEntities:          []string{"A", "B"},
+		Predicates:             []string{"R"},
+		MaxParentLevel:         2,
+		MinParentSupport:       1,
+		MinSupport:             2,
+		IncludeDirectRelations: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if findRelation(g, "A", "R", "Y", false) == nil {
-		t.Fatalf("expected direct A R Y relation to be retained")
+		t.Fatalf("opt-in should retain the direct A R Y relation")
+	}
+	if findRelation(g, "P", "R", "Y", true) == nil {
+		t.Fatalf("lifting must still happen with the opt-in set")
 	}
 }
 

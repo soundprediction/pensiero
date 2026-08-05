@@ -58,7 +58,22 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	return assembleGraph(ctx, b.cfg, b.reg, scope, taxonomic, taxRows, directRows)
+	// Normalise clinical relation direction BEFORE lifting, so a backwards edge is
+	// generalised onto the right endpoint and the derived graph stores it the way
+	// the reasoner will look for it. Read-time repair can only veto such an edge,
+	// never recover it (see normalizeRelationDirection).
+	directRows, relFlipped := applyRelationDirection(b.reg, directRows)
+	b.relationFlipped += relFlipped
+	graph, err := assembleGraph(ctx, b.cfg, b.reg, scope, taxonomic, taxRows, directRows)
+	if err != nil {
+		return nil, err
+	}
+	// Report what direction derivation discarded. A hierarchy that silently
+	// shrank is indistinguishable from one that was always small.
+	graph.Stats.TaxonomyEdgesDropped = b.directionDropped
+	graph.Stats.TaxonomyEdgesFlipped = b.directionFlipped
+	graph.Stats.RelationsReoriented = b.relationFlipped
+	return graph, nil
 }
 
 func (c Config) withDefaults() Config {
@@ -179,6 +194,11 @@ func assembleGraph(ctx context.Context, cfg Config, reg *reasoning.PredicateRegi
 		row.predicate = meta.Canonical
 		row.confidence = positiveOr(row.confidence, 1)
 		directByChild[sourceKey] = append(directByChild[sourceKey], row)
+		// Direct relations feed lifting but are NOT re-emitted by default: the
+		// derived graph should be the generalizations, not a copy of its source.
+		if !cfg.IncludeDirectRelations {
+			continue
+		}
 		g.addNode(row.target, NodeEndpoint, 0, 0)
 		id := strings.TrimSpace(row.id)
 		if id == "" {
@@ -447,12 +467,15 @@ func (g *graphAssembler) addNode(ref EntityRef, kind NodeKind, depth, support in
 	}
 	n := g.nodes[id]
 	if n == nil {
-		n = &Node{ID: id, Name: nodeName(ref), Kind: kind, Depth: depth, Support: support}
+		n = &Node{ID: id, Name: nodeName(ref), Labels: ref.Labels, Kind: kind, Depth: depth, Support: support}
 		g.nodes[id] = n
 		return
 	}
 	if n.Name == "" {
 		n.Name = nodeName(ref)
+	}
+	if len(n.Labels) == 0 {
+		n.Labels = ref.Labels
 	}
 	if nodeRank(kind) < nodeRank(n.Kind) {
 		n.Kind = kind
@@ -538,15 +561,43 @@ func canonicalList(reg *reasoning.PredicateRegistry, in []string) []string {
 	return sortedKeys(set)
 }
 
+// queryPredicateList builds the predicate names to MATCH against stored edges.
+//
+// Graphs store the SOURCE vocabulary's spelling ("IS_PARENT_OF",
+// "HAS_PHENOTYPE"), not the registry's canonical form ("subsumes",
+// "has_phenotype"). Filtering on canonical names alone therefore matched
+// nothing: measured on the deployed thyroid graph, a default build selected 0
+// taxonomy edges out of 5,028 and lifted 0 relations, which read as "this corpus
+// has no hierarchy" instead of "the names do not line up". Passing the stored
+// spellings by hand recovered 1,024 lifted relations from the same graph.
+//
+// So each canonical is expanded to every registered surface form. Values are
+// normalized (lower-case, trimmed) and the query normalizes the stored name the
+// same way, so matching no longer depends on the source's casing convention.
+//
+// An explicit caller-supplied list is still honoured verbatim: an operator
+// naming a predicate the registry does not know must not have it silently
+// dropped.
 func queryPredicateList(reg *reasoning.PredicateRegistry, raw []string, canonical []string) []string {
+	// An explicit caller-supplied list is honoured verbatim: an operator naming a
+	// predicate the registry does not know must not have it silently dropped.
 	if values := exactList(raw); len(values) > 0 {
 		return values
 	}
 	set := map[string]bool{}
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			// Both cases, because the match is exact and the two vocabularies
+			// disagree on casing: registries hold "is_parent_of", graphs store
+			// "IS_PARENT_OF".
+			set[v] = true
+			set[strings.ToUpper(v)] = true
+		}
+	}
 	for _, value := range canonical {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			set[value] = true
+		add(value)
+		for _, form := range reg.SurfaceForms(value) {
+			add(form)
 		}
 	}
 	return sortedKeys(set)
@@ -556,11 +607,33 @@ func taxonomicQueryList(reg *reasoning.PredicateRegistry, raw []string, canonica
 	if values := exactList(raw); len(values) > 0 {
 		return values
 	}
-	list := queryPredicateList(reg, raw, canonical)
-	set := stringSet(list)
+	set := stringSet(queryPredicateList(reg, raw, canonical))
+
+	// A hierarchy edge may be stored as EITHER member of an inverse pair: the
+	// deployed corpus writes "IS_PARENT_OF" (canonicalises to subsumes), while the
+	// default taxonomic predicate is is_a. Querying only one member found 0 of
+	// 5,028 hierarchy edges and lifted nothing.
+	//
+	// Including both is correct now that orientation is DERIVED rather than
+	// inferred from which predicate was used: the query's job is to find the
+	// edges, and Config.Directions decides which way each one points.
+	for _, canon := range canonical {
+		inv, ok := reg.Inverse(canon)
+		if !ok || strings.TrimSpace(inv) == "" {
+			continue
+		}
+		for _, form := range append(reg.SurfaceForms(inv), inv) {
+			if form = strings.TrimSpace(form); form != "" {
+				set[form] = true
+				set[strings.ToUpper(form)] = true
+			}
+		}
+	}
+
 	if set["is_a"] {
 		for _, value := range []string{"is_a", "is a", "isa", "subclass of", "subclass_of", "subClassOf", "type of", "subtype of"} {
 			set[value] = true
+			set[strings.ToUpper(value)] = true
 		}
 	}
 	return sortedKeys(set)

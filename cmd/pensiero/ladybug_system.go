@@ -28,10 +28,18 @@ func openLadybugGraph(path string, readOnly bool) (graphHandle, error) {
 		// daemon keeps many read-only handles open at once (max-open-topics ×
 		// grpc-pool-size), so an 8TB (1<<43) reservation per handle exhausts the
 		// ~128TB x86-64 user address space after ~16 handles and OpenDatabase
-		// fails with "status 1". Serving graphs are bounded and read-only, so a
-		// 16GB cap (28× the largest current graph) is ample while keeping the
-		// total virtual reservation tiny across dozens of handles.
-		MaxDbSize: 1 << 34,
+		// fails with "status 1".
+		//
+		// The cap must still EXCEED the largest graph, or that graph cannot be
+		// opened at all — with the same "status 1" failure, which is why the two
+		// cases are easy to confuse. The previous 16GiB value was chosen when it
+		// was "28× the largest current graph"; the corpus has since outgrown it:
+		// the deployed diabetes-type2 topic graph is 18.8GB, so every attempt to
+		// open it failed while every smaller graph worked.
+		//
+		// 64GiB matches predicato's router cap and leaves ample headroom: even 30
+		// concurrent handles reserve ~1.9TiB of the ~128TB space.
+		MaxDbSize: 1 << 36,
 	}
 	db, err := ladybug.OpenDatabase(path, cfg)
 	if err != nil {

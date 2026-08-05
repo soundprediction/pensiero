@@ -38,6 +38,9 @@ type NativeReasoner struct {
 	// and finding names recur across every claim in a differential.
 	entityCache sync.Map
 	entityCount atomic.Int64
+	// entityTypeCache memoizes entity name -> declared labels, used to repair the
+	// stored direction of asymmetric predicates (see orientation.go).
+	entityTypeCache sync.Map
 }
 
 func NewNativeReasoner(g GraphQuerier, reg *PredicateRegistry, cfg Config) *NativeReasoner {
@@ -182,7 +185,19 @@ func (n *NativeReasoner) entailsDirected(ctx context.Context, c Claim) (EntailRe
 		if res.Best == nil {
 			return EntailResult{Verdict: VerdictUnsupported}, nil
 		}
-		effective, ok := effectivePredicate(n.reg, res.Best.Steps)
+		// Repair each step's STORED direction from its endpoint types BEFORE
+		// deciding acceptance. Ingest does not orient asymmetric clinical
+		// predicates consistently (measured: ~42% of HAS_PHENOTYPE edges run
+		// symptom->DISEASE rather than DISEASE->symptom), and orienting afterwards
+		// is not enough: has_phenotype already ENTAILS has_symptom, so a reversed
+		// edge sails through acceptance untouched and "Short stature has_symptom
+		// Dent Disease" — a symptom having a disease as its symptom — entails.
+		// Orienting first turns that edge into phenotype_of, which does not entail
+		// has_symptom, so the reversed claim is correctly rejected while the true
+		// one still proves. This relabels a relationship the graph already asserts;
+		// it never invents one, and no-ops when types are absent or ambiguous.
+		steps := n.orientedSteps(ctx, res.Best.Steps)
+		effective, ok := effectivePredicate(n.reg, steps)
 		if !ok || !acceptedPredicate(effective, acceptedPredicates) {
 			return EntailResult{Verdict: VerdictUnsupported}, nil
 		}

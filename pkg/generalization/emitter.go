@@ -114,7 +114,7 @@ func (e *CypherEmitter) createNode(ctx context.Context, node Node) error {
 	params := map[string]any{
 		"attributes": string(attrs),
 		"created_at": time.Now(),
-		"labels":     []string{string(node.Kind)},
+		"labels":     emitLabels(node),
 		"name":       node.Name,
 		"scope":      firstOr(e.scope, []string{"generalization"}),
 		"summary":    "",
@@ -206,4 +206,27 @@ CREATE (rel)-[:RELATES_TO]->(target)
 		return fmt.Errorf("generalization relation target emit %q: %w", rel.ID, err)
 	}
 	return nil
+}
+
+// emitLabels preserves the SOURCE entity's types and appends the derived node's
+// kind, rather than replacing the types with the kind.
+//
+// The types are load-bearing downstream: pkg/reasoning/orientation.go repairs
+// stored clinical-relation direction by checking endpoint types against a
+// predicate's declared domain/range. Emitting only the kind labelled every
+// entity "scope", which silently disabled that repair on every derived graph and
+// left the ~42% of inverted has_phenotype edges uncorrectable.
+func emitLabels(node Node) []string {
+	out := make([]string, 0, len(node.Labels)+1)
+	seen := map[string]bool{}
+	for _, l := range node.Labels {
+		if l != "" && !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	if k := string(node.Kind); k != "" && !seen[k] {
+		out = append(out, k)
+	}
+	return out
 }

@@ -49,19 +49,49 @@ type Config struct {
 	TaxonomicPredicates []string
 	TaxonomicDirection  TaxonomicDirection
 	Predicates          []string
-	MaxParentLevel      int
-	MinParentSupport    int
-	MinSupport          int
+
+	// Directions, when set, derives each taxonomy edge's orientation instead of
+	// trusting the one the graph stores, and drops pairs it cannot orient.
+	//
+	// Leaving this nil preserves the historical behaviour of walking
+	// TaxonomicDirection blindly. That behaviour is only safe on a corpus whose
+	// taxonomy direction has been verified; on the deployed corpus it is a coin
+	// flip (see pkg/generalization/direction.go).
+	Directions DirectionSource
+
+	MaxParentLevel   int
+	MinParentSupport int
+	MinSupport       int
+
+	// IncludeDirectRelations copies every in-scope SOURCE relation into the output
+	// alongside the derived ones. Default false: a generalization graph is meant to
+	// be a small DERIVED subgraph — the taxonomy it selected plus the relations it
+	// lifted onto parents — not a duplicate of its source. Copying them produced an
+	// output the same size as the input (188,570 source edges -> 187,303 "derived"),
+	// which hid the fact that lifting had produced almost nothing and doubled the
+	// storage for no added inference.
+	//
+	// Direct relations are still READ, because lifting is computed from them; this
+	// only controls whether they are re-emitted.
+	IncludeDirectRelations bool
 }
 
 type EntityRef struct {
 	ID   string
 	Name string
+	// Labels are the SOURCE entity's types (DISEASE, SYMPTOM, DRUG, ...). They
+	// must survive into the derived graph: pkg/reasoning/orientation.go repairs
+	// stored clinical-relation direction from endpoint types, and a derived graph
+	// that drops them cannot be corrected at query time — making it strictly less
+	// usable than its source.
+	Labels []string
 }
 
 type Node struct {
-	ID      string
-	Name    string
+	ID   string
+	Name string
+	// Labels carries the source entity's types through to the emitter.
+	Labels  []string
 	Kind    NodeKind
 	Depth   int
 	Support int
@@ -100,12 +130,32 @@ type Stats struct {
 	EndpointCount       int
 	DirectRelationCount int
 	LiftedRelationCount int
+
+	// TaxonomyEdgesDropped counts source hierarchy edges discarded because no
+	// signal could determine their direction; TaxonomyEdgesFlipped counts those
+	// whose stored orientation was the opposite of the derived one — i.e. edges
+	// that would have been lifted backwards. Both are zero when Config.Directions
+	// is nil.
+	TaxonomyEdgesDropped int
+	TaxonomyEdgesFlipped int
+
+	// RelationsReoriented counts source relations whose endpoints were swapped
+	// because their types showed them stored backwards. Zero means either a
+	// clean corpus or absent entity types — the run report should distinguish
+	// those, since the second silently disables the repair.
+	RelationsReoriented int
 }
 
 type Builder struct {
 	source reasoning.GraphQuerier
 	reg    *reasoning.PredicateRegistry
 	cfg    Config
+
+	// Direction-derivation tallies, surfaced in Stats so a run reports how much
+	// of the source hierarchy it discarded rather than silently shrinking it.
+	directionDropped int
+	directionFlipped int
+	relationFlipped  int
 }
 
 type taxonomyRow struct {

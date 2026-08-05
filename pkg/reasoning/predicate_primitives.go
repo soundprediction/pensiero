@@ -10,10 +10,10 @@ package reasoning
 var medicalPredicates = []PredicateMeta{
 	// clinical evidence relations — directed with inverses; sub-properties of the
 	// general associated_with so any clinical link implies (weaker) association.
-	{Canonical: "symptom_of", InverseOf: "has_symptom", SubPropertyOf: []string{"associated_with"}},
-	{Canonical: "has_symptom", InverseOf: "symptom_of", SubPropertyOf: []string{"associated_with"}},
-	{Canonical: "has_phenotype", InverseOf: "phenotype_of", SubPropertyOf: []string{"has_symptom"}},
-	{Canonical: "phenotype_of", InverseOf: "has_phenotype", SubPropertyOf: []string{"symptom_of"}},
+	{Canonical: "symptom_of", InverseOf: "has_symptom", SubPropertyOf: []string{"associated_with"}, Domain: []string{"SYMPTOM"}, Range: []string{"DISEASE"}},
+	{Canonical: "has_symptom", InverseOf: "symptom_of", SubPropertyOf: []string{"associated_with"}, Domain: []string{"DISEASE"}, Range: []string{"SYMPTOM"}},
+	{Canonical: "has_phenotype", InverseOf: "phenotype_of", SubPropertyOf: []string{"has_symptom"}, Domain: []string{"DISEASE"}, Range: []string{"SYMPTOM"}},
+	{Canonical: "phenotype_of", InverseOf: "has_phenotype", SubPropertyOf: []string{"symptom_of"}, Domain: []string{"SYMPTOM"}, Range: []string{"DISEASE"}},
 	{Canonical: "sign_of", InverseOf: "has_sign", SubPropertyOf: []string{"symptom_of"}},
 	{Canonical: "has_sign", InverseOf: "sign_of", SubPropertyOf: []string{"has_symptom"}},
 	{Canonical: "manifests_as", InverseOf: "manifestation_of", SubPropertyOf: []string{"has_symptom"}},
@@ -33,8 +33,8 @@ var medicalPredicates = []PredicateMeta{
 	{Canonical: "differential_of", Chars: Symmetric, SubPropertyOf: []string{"associated_with"}},
 
 	// therapeutic / pharmacologic / diagnostic
-	{Canonical: "treats", InverseOf: "treated_by"},
-	{Canonical: "treated_by", InverseOf: "treats"},
+	{Canonical: "treats", InverseOf: "treated_by", Domain: []string{"DRUG"}, Range: []string{"DISEASE"}},
+	{Canonical: "treated_by", InverseOf: "treats", Domain: []string{"DISEASE"}, Range: []string{"DRUG"}},
 	{Canonical: "prevents", InverseOf: "prevented_by", SubPropertyOf: []string{"associated_with"}},
 	{Canonical: "prevented_by", InverseOf: "prevents", SubPropertyOf: []string{"associated_with"}},
 	{Canonical: "contraindicated_for", InverseOf: "has_contraindication"},
