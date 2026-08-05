@@ -187,12 +187,14 @@ func (b *Builder) directRelations(ctx context.Context, scope []EntityRef, predic
 			return nil, err
 		}
 		source := EntityRef{
-			ID:   firstString(row, "source_id", "child_id", "source_uuid"),
-			Name: firstString(row, "source_name", "child_name"),
+			ID:     firstString(row, "source_id", "child_id", "source_uuid"),
+			Name:   firstString(row, "source_name", "child_name"),
+			Labels: anyStringSlice(row["source_labels"]),
 		}
 		target := EntityRef{
-			ID:   firstString(row, "target_id", "object_id", "target_uuid"),
-			Name: firstString(row, "target_name", "object_name"),
+			ID:     firstString(row, "target_id", "object_id", "target_uuid"),
+			Name:   firstString(row, "target_name", "object_name"),
+			Labels: anyStringSlice(row["target_labels"]),
 		}
 		out = append(out, directRow{
 			source:     source,
@@ -286,8 +288,10 @@ WHERE (source.uuid IN $entity_refs OR source.name IN $entity_refs OR lower(sourc
   AND rel.name IN $predicates
 RETURN source.uuid AS source_id,
        source.name AS source_name,
+       coalesce(source.labels, []) AS source_labels,
        target.uuid AS target_id,
        target.name AS target_name,
+       coalesce(target.labels, []) AS target_labels,
        rel.uuid AS edge_id,
        rel.name AS predicate,
        1.0 AS confidence

@@ -58,6 +58,12 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Normalise clinical relation direction BEFORE lifting, so a backwards edge is
+	// generalised onto the right endpoint and the derived graph stores it the way
+	// the reasoner will look for it. Read-time repair can only veto such an edge,
+	// never recover it (see normalizeRelationDirection).
+	directRows, relFlipped := applyRelationDirection(b.reg, directRows)
+	b.relationFlipped += relFlipped
 	graph, err := assembleGraph(ctx, b.cfg, b.reg, scope, taxonomic, taxRows, directRows)
 	if err != nil {
 		return nil, err
@@ -66,6 +72,7 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 	// shrank is indistinguishable from one that was always small.
 	graph.Stats.TaxonomyEdgesDropped = b.directionDropped
 	graph.Stats.TaxonomyEdgesFlipped = b.directionFlipped
+	graph.Stats.RelationsReoriented = b.relationFlipped
 	return graph, nil
 }
 

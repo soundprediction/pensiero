@@ -1,6 +1,10 @@
 package generalization
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/soundprediction/pensiero/pkg/reasoning"
+)
 
 // fakeDirections orients only the pairs it is told about, so a test can assert
 // exactly which edges survive and which are dropped.
@@ -139,5 +143,81 @@ func TestApplyDirectionMatchesResolverNormalization(t *testing.T) {
 	}
 	if !namesEqual(got[0].parent.Name, "Kinase Activity") {
 		t.Errorf("parent=%q, want the resolver's choice", got[0].parent.Name)
+	}
+}
+
+func medReg(t *testing.T) *reasoning.PredicateRegistry {
+	t.Helper()
+	return reasoning.DefaultMedicalRegistry()
+}
+
+func clinicalRow(src, srcTypes, pred, tgt, tgtTypes string) directRow {
+	return directRow{
+		source:    EntityRef{ID: src, Name: src, Labels: []string{srcTypes}},
+		target:    EntityRef{ID: tgt, Name: tgt, Labels: []string{tgtTypes}},
+		predicate: pred,
+	}
+}
+
+// The measured defect: SYMPTOM -has_phenotype-> DISEASE is backwards. Read-time
+// repair can only veto it; normalising at build time is what makes the fact
+// findable in the orientation the reasoner queries.
+func TestNormalizeRelationDirectionFlipsBackwardsClinicalEdge(t *testing.T) {
+	row, flipped := normalizeRelationDirection(medReg(t),
+		clinicalRow("Abnormality of the elbow", "SYMPTOM", "has_phenotype", "Pelviscapular dysplasia", "DISEASE"))
+	if !flipped {
+		t.Fatal("expected a backwards SYMPTOM->DISEASE has_phenotype edge to be flipped")
+	}
+	if row.source.Name != "Pelviscapular dysplasia" || row.target.Name != "Abnormality of the elbow" {
+		t.Errorf("endpoints not swapped: %s -> %s", row.source.Name, row.target.Name)
+	}
+	if row.predicate != "has_phenotype" {
+		t.Errorf("predicate = %q, want the canonical spelling retained", row.predicate)
+	}
+}
+
+func TestNormalizeRelationDirectionLeavesCorrectEdgeAlone(t *testing.T) {
+	_, flipped := normalizeRelationDirection(medReg(t),
+		clinicalRow("Pelviscapular dysplasia", "DISEASE", "has_phenotype", "Abnormality of the elbow", "SYMPTOM"))
+	if flipped {
+		t.Error("a correctly oriented edge must not be flipped")
+	}
+}
+
+// Fail closed: absent or ambiguous types must not produce a guess, since a
+// wrongly flipped clinical edge asserts something the graph does not contain.
+func TestNormalizeRelationDirectionFailsClosed(t *testing.T) {
+	reg := medReg(t)
+	cases := map[string]directRow{
+		"no source types": {source: EntityRef{Name: "a"}, target: EntityRef{Name: "b", Labels: []string{"DISEASE"}}, predicate: "has_phenotype"},
+		"no target types": {source: EntityRef{Name: "a", Labels: []string{"SYMPTOM"}}, target: EntityRef{Name: "b"}, predicate: "has_phenotype"},
+		"same type both":  clinicalRow("a", "DISEASE", "has_phenotype", "b", "DISEASE"),
+		"unknown pred":    clinicalRow("a", "SYMPTOM", "expresses", "b", "DISEASE"),
+	}
+	for name, row := range cases {
+		if _, flipped := normalizeRelationDirection(reg, row); flipped {
+			t.Errorf("%s: flipped, want left alone", name)
+		}
+	}
+	if _, flipped := normalizeRelationDirection(nil, clinicalRow("a", "SYMPTOM", "has_phenotype", "b", "DISEASE")); flipped {
+		t.Error("nil registry: flipped, want left alone")
+	}
+}
+
+func TestApplyRelationDirectionCountsFlips(t *testing.T) {
+	rows := []directRow{
+		clinicalRow("s1", "SYMPTOM", "has_phenotype", "d1", "DISEASE"), // backwards
+		clinicalRow("d2", "DISEASE", "has_phenotype", "s2", "SYMPTOM"), // correct
+		clinicalRow("s3", "SYMPTOM", "has_phenotype", "d3", "DISEASE"), // backwards
+	}
+	out, n := applyRelationDirection(medReg(t), rows)
+	if n != 2 {
+		t.Fatalf("flipped=%d, want 2", n)
+	}
+	if out[0].source.Name != "d1" || out[2].source.Name != "d3" {
+		t.Errorf("wrong rows flipped: %+v", out)
+	}
+	if out[1].source.Name != "d2" {
+		t.Error("the already-correct row was modified")
 	}
 }

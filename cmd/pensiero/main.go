@@ -294,6 +294,15 @@ func printStats(g *generalization.Graph) {
 		g.Stats.DirectRelationCount,
 		g.Stats.LiftedRelationCount,
 	)
+	// Direction repair is reported separately and ALWAYS, including zeros: a run
+	// that reoriented nothing may have had a clean corpus, or may have been handed
+	// entities with no types, which silently disables the repair. Those are very
+	// different outcomes and the numbers are how they are told apart.
+	fmt.Fprintf(os.Stderr, "  direction: taxonomy_flipped=%d taxonomy_dropped=%d relations_reoriented=%d\n",
+		g.Stats.TaxonomyEdgesFlipped,
+		g.Stats.TaxonomyEdgesDropped,
+		g.Stats.RelationsReoriented,
+	)
 }
 
 // buildDirectionSource loads the ontologies used to derive hierarchy direction.

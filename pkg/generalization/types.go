@@ -138,6 +138,12 @@ type Stats struct {
 	// is nil.
 	TaxonomyEdgesDropped int
 	TaxonomyEdgesFlipped int
+
+	// RelationsReoriented counts source relations whose endpoints were swapped
+	// because their types showed them stored backwards. Zero means either a
+	// clean corpus or absent entity types — the run report should distinguish
+	// those, since the second silently disables the repair.
+	RelationsReoriented int
 }
 
 type Builder struct {
@@ -149,6 +155,7 @@ type Builder struct {
 	// of the source hierarchy it discarded rather than silently shrinking it.
 	directionDropped int
 	directionFlipped int
+	relationFlipped  int
 }
 
 type taxonomyRow struct {

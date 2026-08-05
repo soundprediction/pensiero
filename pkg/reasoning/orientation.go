@@ -30,6 +30,17 @@ import (
 // This never invents a relationship. It only relabels one the graph already
 // asserts, and only when the types make the intended reading unambiguous.
 
+// OrientPredicate is the exported form of orientedPredicate, so graph BUILDERS
+// can normalise direction at write time using exactly the rule the reasoner
+// applies at read time.
+//
+// Sharing one implementation matters: a builder that oriented edges by a
+// slightly different rule would produce a corpus the reasoner disagrees with,
+// and the disagreement would surface as unexplained unsupported verdicts.
+func OrientPredicate(reg *PredicateRegistry, pred string, headTypes, tailTypes []string) string {
+	return orientedPredicate(reg, pred, headTypes, tailTypes)
+}
+
 // orientedPredicate returns the predicate a stored edge actually expresses,
 // given its endpoint types. It returns the input unchanged when the predicate
 // declares no domain/range, when the types are unknown, or when the edge is
